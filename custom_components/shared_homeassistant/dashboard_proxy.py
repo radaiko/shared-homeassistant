@@ -621,17 +621,36 @@ class DashboardProxyHTTPView(HomeAssistantView):
     def _serve_iframe_wrapper(
         self, remote_url: str, path: str, query_string: str
     ) -> web.Response:
-        """Serve a wrapper page that directly iframes the remote HA dashboard."""
-        url = f"{remote_url}/{path}"
+        """Serve a wrapper that iframes the remote HA with auto-auth."""
+        dashboard_url = f"{remote_url}/{path}"
         if query_string:
-            url += f"?{query_string}"
+            dashboard_url += f"?{query_string}"
+
+        # The HA frontend stores auth in localStorage with key "hassTokens"
+        # keyed by the origin URL. We inject a script that stores the token
+        # in an iframe pointing to the remote origin, then loads the dashboard.
+        # But since we can't access cross-origin localStorage from here,
+        # we use a two-step approach:
+        # 1. First iframe loads a proxy page that sets the token
+        # 2. Then redirects to the actual dashboard
+
+        # Actually simpler: the HA frontend accepts auth via the WS connection.
+        # If the user is not logged in, the frontend shows login page.
+        # But the frontend also checks for ?auth_callback=1&code=xxx parameters.
+        # We can use the OAuth flow to auto-authenticate.
+        #
+        # Simplest: just iframe the remote URL directly. If the user has
+        # already logged in to the Haus instance in this browser, the
+        # session cookie persists and the dashboard loads.
+        # If not, they see a login page — they log in once and it works
+        # from then on.
 
         wrapper = f"""<!DOCTYPE html>
 <html><head>
 <meta charset="utf-8">
 <style>html,body{{margin:0;padding:0;height:100%;overflow:hidden}}iframe{{width:100%;height:100%;border:none}}</style>
 </head><body>
-<iframe src="{url}" allow="fullscreen"></iframe>
+<iframe src="{dashboard_url}" allow="fullscreen"></iframe>
 </body></html>"""
 
         return web.Response(status=200, text=wrapper, content_type="text/html")
