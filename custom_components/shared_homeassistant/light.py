@@ -7,7 +7,7 @@ from typing import Any
 from homeassistant.components.light import (
     LightEntity,
     ATTR_BRIGHTNESS,
-    ATTR_COLOR_TEMP,
+    ATTR_COLOR_TEMP_KELVIN,
     ATTR_RGB_COLOR,
     ATTR_HS_COLOR,
     ColorMode,
@@ -44,7 +44,7 @@ class SharedLight(SharedBaseEntity, LightEntity):
         """Initialize the shared light."""
         super().__init__(**kwargs)
         self._brightness: int | None = None
-        self._color_temp: int | None = None
+        self._color_temp_kelvin: int | None = None
         self._rgb_color: tuple[int, int, int] | None = None
         self._hs_color: tuple[float, float] | None = None
 
@@ -61,9 +61,9 @@ class SharedLight(SharedBaseEntity, LightEntity):
         return self._brightness
 
     @property
-    def color_temp(self) -> int | None:
-        """Return the color temperature."""
-        return self._color_temp
+    def color_temp_kelvin(self) -> int | None:
+        """Return the color temperature in Kelvin."""
+        return self._color_temp_kelvin
 
     @property
     def rgb_color(self) -> tuple[int, int, int] | None:
@@ -80,7 +80,7 @@ class SharedLight(SharedBaseEntity, LightEntity):
     ) -> None:
         """Process light state update."""
         self._brightness = attributes.get(ATTR_BRIGHTNESS)
-        self._color_temp = attributes.get(ATTR_COLOR_TEMP)
+        self._color_temp_kelvin = attributes.get(ATTR_COLOR_TEMP_KELVIN)
         self._rgb_color = attributes.get(ATTR_RGB_COLOR)
         self._hs_color = attributes.get(ATTR_HS_COLOR)
 
@@ -107,8 +107,8 @@ class SharedLight(SharedBaseEntity, LightEntity):
         service_data = {}
         if ATTR_BRIGHTNESS in kwargs:
             service_data[ATTR_BRIGHTNESS] = kwargs[ATTR_BRIGHTNESS]
-        if ATTR_COLOR_TEMP in kwargs:
-            service_data[ATTR_COLOR_TEMP] = kwargs[ATTR_COLOR_TEMP]
+        if ATTR_COLOR_TEMP_KELVIN in kwargs:
+            service_data[ATTR_COLOR_TEMP_KELVIN] = kwargs[ATTR_COLOR_TEMP_KELVIN]
         if ATTR_RGB_COLOR in kwargs:
             service_data[ATTR_RGB_COLOR] = list(kwargs[ATTR_RGB_COLOR])
         if ATTR_HS_COLOR in kwargs:
