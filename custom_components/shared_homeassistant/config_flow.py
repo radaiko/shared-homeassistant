@@ -9,7 +9,6 @@ import voluptuous as vol
 
 from homeassistant.config_entries import ConfigFlow, OptionsFlow, ConfigFlowResult
 from homeassistant.core import callback
-from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.selector import (
     DeviceSelector,
     DeviceSelectorConfig,

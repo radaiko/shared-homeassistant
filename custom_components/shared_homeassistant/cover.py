@@ -15,7 +15,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .base_entity import SharedBaseEntity
-from .const import DOMAIN, DATA_SUBSCRIBER
 
 
 async def async_setup_entry(
@@ -24,7 +23,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up shared cover entities."""
-    subscriber = hass.data[DOMAIN][config_entry.entry_id][DATA_SUBSCRIBER]
+    subscriber = config_entry.runtime_data.subscriber
     subscriber.register_platform("cover", async_add_entities)
 
     catch_up = subscriber.get_entities_for_domain("cover")

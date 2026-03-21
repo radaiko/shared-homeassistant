@@ -1,5 +1,15 @@
 """Constants for the Shared Home Assistant integration."""
 
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .mqtt_client import MQTTClient
+    from .publisher import Publisher
+    from .subscriber import Subscriber
+
 DOMAIN = "shared_homeassistant"
 
 # MQTT topic templates
@@ -41,8 +51,10 @@ PLATFORMS = [
     "number",
 ]
 
-# Data keys stored in hass.data[DOMAIN]
-DATA_MQTT_CLIENT = "mqtt_client"
-DATA_PUBLISHER = "publisher"
-DATA_SUBSCRIBER = "subscriber"
-DATA_UNSUBSCRIBE_CALLBACKS = "unsubscribe_callbacks"
+@dataclass
+class SharedHARuntimeData:
+    """Runtime data for the Shared Home Assistant integration."""
+
+    mqtt_client: MQTTClient
+    publisher: Publisher
+    subscriber: Subscriber
