@@ -385,6 +385,49 @@ def _rewrite_html_proxy(body: bytes, instance_id: str, original_path: str) -> by
     (function() {{
         var P = "{proxy_prefix}";
 
+        // Isolate localStorage to prevent the proxied HA frontend from
+        // overwriting the parent instance's auth tokens. We use a prefixed
+        // key namespace so both can coexist on the same origin.
+        var origLS = window.localStorage;
+        var lsPrefix = "shared_ha_proxy_";
+        var proxyStorage = {{
+            getItem: function(key) {{ return origLS.getItem(lsPrefix + key); }},
+            setItem: function(key, val) {{ origLS.setItem(lsPrefix + key, val); }},
+            removeItem: function(key) {{ origLS.removeItem(lsPrefix + key); }},
+            clear: function() {{
+                var toRemove = [];
+                for (var i = 0; i < origLS.length; i++) {{
+                    var k = origLS.key(i);
+                    if (k && k.startsWith(lsPrefix)) toRemove.push(k);
+                }}
+                toRemove.forEach(function(k) {{ origLS.removeItem(k); }});
+            }},
+            get length() {{
+                var count = 0;
+                for (var i = 0; i < origLS.length; i++) {{
+                    if (origLS.key(i) && origLS.key(i).startsWith(lsPrefix)) count++;
+                }}
+                return count;
+            }},
+            key: function(n) {{
+                var count = 0;
+                for (var i = 0; i < origLS.length; i++) {{
+                    var k = origLS.key(i);
+                    if (k && k.startsWith(lsPrefix)) {{
+                        if (count === n) return k.substring(lsPrefix.length);
+                        count++;
+                    }}
+                }}
+                return null;
+            }}
+        }};
+        try {{
+            Object.defineProperty(window, 'localStorage', {{
+                get: function() {{ return proxyStorage; }},
+                configurable: true,
+            }});
+        }} catch(e) {{}}
+
         // Override WebSocket
         var OrigWS = window.WebSocket;
         window.WebSocket = function(url, protocols) {{
