@@ -34,6 +34,8 @@ CONF_INSTANCE_NAME = "instance_name"
 CONF_INSTANCE_ID = "instance_id"
 CONF_SELECTED_DEVICES = "selected_devices"
 CONF_SELECTED_ENTITIES = "selected_entities"
+CONF_READONLY_DEVICES = "readonly_devices"
+CONF_READONLY_ENTITIES = "readonly_entities"
 CONF_ENTITY_PREFIX = "entity_prefix"
 
 # Defaults

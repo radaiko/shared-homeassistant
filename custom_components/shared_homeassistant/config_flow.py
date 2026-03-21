@@ -33,11 +33,42 @@ from .const import (
     CONF_INSTANCE_ID,
     CONF_SELECTED_DEVICES,
     CONF_SELECTED_ENTITIES,
+    CONF_READONLY_DEVICES,
+    CONF_READONLY_ENTITIES,
     CONF_ENTITY_PREFIX,
     DEFAULT_PORT,
     DEFAULT_ENTITY_PREFIX,
     PLATFORMS,
 )
+
+
+def _selection_schema(
+    devices_rw: list = [],
+    devices_ro: list = [],
+    entities_rw: list = [],
+    entities_ro: list = [],
+) -> vol.Schema:
+    """Build the device/entity selection schema."""
+    return vol.Schema(
+        {
+            vol.Optional(
+                CONF_SELECTED_DEVICES, default=devices_rw
+            ): DeviceSelector(DeviceSelectorConfig(multiple=True)),
+            vol.Optional(
+                CONF_READONLY_DEVICES, default=devices_ro
+            ): DeviceSelector(DeviceSelectorConfig(multiple=True)),
+            vol.Optional(
+                CONF_SELECTED_ENTITIES, default=entities_rw
+            ): EntitySelector(
+                EntitySelectorConfig(multiple=True, domain=PLATFORMS)
+            ),
+            vol.Optional(
+                CONF_READONLY_ENTITIES, default=entities_ro
+            ): EntitySelector(
+                EntitySelectorConfig(multiple=True, domain=PLATFORMS)
+            ),
+        }
+    )
 
 
 class SharedHAConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -121,8 +152,14 @@ class SharedHAConfigFlow(ConfigFlow, domain=DOMAIN):
             self._data[CONF_SELECTED_DEVICES] = user_input.get(
                 CONF_SELECTED_DEVICES, []
             )
+            self._data[CONF_READONLY_DEVICES] = user_input.get(
+                CONF_READONLY_DEVICES, []
+            )
             self._data[CONF_SELECTED_ENTITIES] = user_input.get(
                 CONF_SELECTED_ENTITIES, []
+            )
+            self._data[CONF_READONLY_ENTITIES] = user_input.get(
+                CONF_READONLY_ENTITIES, []
             )
 
             # Ensure port is int
@@ -135,21 +172,7 @@ class SharedHAConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="selection",
-            data_schema=vol.Schema(
-                {
-                    vol.Optional(
-                        CONF_SELECTED_DEVICES, default=[]
-                    ): DeviceSelector(DeviceSelectorConfig(multiple=True)),
-                    vol.Optional(
-                        CONF_SELECTED_ENTITIES, default=[]
-                    ): EntitySelector(
-                        EntitySelectorConfig(
-                            multiple=True,
-                            domain=PLATFORMS,
-                        )
-                    ),
-                }
-            ),
+            data_schema=_selection_schema(),
         )
 
     @staticmethod
@@ -175,27 +198,33 @@ class SharedHAOptionsFlow(OptionsFlow):
 
         current = self.config_entry.data
 
-        return self.async_show_form(
-            step_id="init",
-            data_schema=vol.Schema(
-                {
-                    vol.Optional(
-                        CONF_SELECTED_DEVICES,
-                        default=current.get(CONF_SELECTED_DEVICES, []),
-                    ): DeviceSelector(DeviceSelectorConfig(multiple=True)),
-                    vol.Optional(
-                        CONF_SELECTED_ENTITIES,
-                        default=current.get(CONF_SELECTED_ENTITIES, []),
-                    ): EntitySelector(
-                        EntitySelectorConfig(
-                            multiple=True,
-                            domain=PLATFORMS,
-                        )
-                    ),
-                    vol.Optional(
-                        CONF_ENTITY_PREFIX,
-                        default=current.get(CONF_ENTITY_PREFIX, DEFAULT_ENTITY_PREFIX),
-                    ): TextSelector(TextSelectorConfig(type="text")),
-                }
-            ),
+        schema = vol.Schema(
+            {
+                vol.Optional(
+                    CONF_SELECTED_DEVICES,
+                    default=current.get(CONF_SELECTED_DEVICES, []),
+                ): DeviceSelector(DeviceSelectorConfig(multiple=True)),
+                vol.Optional(
+                    CONF_READONLY_DEVICES,
+                    default=current.get(CONF_READONLY_DEVICES, []),
+                ): DeviceSelector(DeviceSelectorConfig(multiple=True)),
+                vol.Optional(
+                    CONF_SELECTED_ENTITIES,
+                    default=current.get(CONF_SELECTED_ENTITIES, []),
+                ): EntitySelector(
+                    EntitySelectorConfig(multiple=True, domain=PLATFORMS)
+                ),
+                vol.Optional(
+                    CONF_READONLY_ENTITIES,
+                    default=current.get(CONF_READONLY_ENTITIES, []),
+                ): EntitySelector(
+                    EntitySelectorConfig(multiple=True, domain=PLATFORMS)
+                ),
+                vol.Optional(
+                    CONF_ENTITY_PREFIX,
+                    default=current.get(CONF_ENTITY_PREFIX, DEFAULT_ENTITY_PREFIX),
+                ): TextSelector(TextSelectorConfig(type="text")),
+            }
         )
+
+        return self.async_show_form(step_id="init", data_schema=schema)

@@ -17,6 +17,8 @@ from .const import (
     CONF_INSTANCE_NAME,
     CONF_SELECTED_DEVICES,
     CONF_SELECTED_ENTITIES,
+    CONF_READONLY_DEVICES,
+    CONF_READONLY_ENTITIES,
 )
 from .mqtt_client import MQTTClient
 
@@ -39,6 +41,8 @@ class Publisher:
         self._instance_name: str = config[CONF_INSTANCE_NAME]
         self._selected_devices: list[str] = config.get(CONF_SELECTED_DEVICES, [])
         self._selected_entities: list[str] = config.get(CONF_SELECTED_ENTITIES, [])
+        self._readonly_devices: list[str] = config.get(CONF_READONLY_DEVICES, [])
+        self._readonly_entities: list[str] = config.get(CONF_READONLY_ENTITIES, [])
         self._unsub_state_listener: callback | None = None
         self._published_devices: set[str] = set()
         self._published_entities: set[str] = set()
@@ -83,45 +87,49 @@ class Publisher:
         self,
         selected_devices: list[str],
         selected_entities: list[str],
+        readonly_devices: list[str],
+        readonly_entities: list[str],
     ) -> None:
         """Update the selection and publish/unpublish as needed."""
-        old_devices = set(self._selected_devices)
-        new_devices = set(selected_devices)
-        old_entities = set(self._selected_entities)
-        new_entities = set(selected_entities)
+        old_all_devices = set(self._selected_devices) | set(self._readonly_devices)
+        new_all_devices = set(selected_devices) | set(readonly_devices)
+        old_all_entities = set(self._selected_entities) | set(self._readonly_entities)
+        new_all_entities = set(selected_entities) | set(readonly_entities)
 
         # Unpublish removed devices
         dev_reg = dr.async_get(self._hass)
-        for device_id in old_devices - new_devices:
+        for device_id in old_all_devices - new_all_devices:
             device = dev_reg.async_get(device_id)
             if device:
                 await self._unpublish_device(device)
 
         # Unpublish removed entities
-        for entity_id in old_entities - new_entities:
+        for entity_id in old_all_entities - new_all_entities:
             await self._unpublish_entity(entity_id)
 
         self._selected_devices = selected_devices
         self._selected_entities = selected_entities
+        self._readonly_devices = readonly_devices
+        self._readonly_entities = readonly_entities
 
-        # Publish new devices
-        for device_id in new_devices - old_devices:
+        # Republish all devices (to update readonly flag)
+        for device_id in new_all_devices:
             device = dev_reg.async_get(device_id)
             if device:
-                await self._publish_device(device)
+                await self._publish_device(
+                    device, readonly=device_id in set(readonly_devices)
+                )
 
         # Republish virtual device with updated standalone entities
-        if old_entities != new_entities:
-            # Clear old virtual device if entities were removed and none remain
-            virtual_device_id = f"_standalone_{self._instance_id}"
-            if not new_entities and virtual_device_id in self._published_devices:
-                topic = TOPIC_DEVICE.format(
-                    instance_id=self._instance_id, device_id=virtual_device_id
-                )
-                await self._mqtt.async_publish(topic, "", retain=True)
-                self._published_devices.discard(virtual_device_id)
-            elif new_entities:
-                await self._publish_selected_entities()
+        virtual_device_id = f"_standalone_{self._instance_id}"
+        if not new_all_entities and virtual_device_id in self._published_devices:
+            topic = TOPIC_DEVICE.format(
+                instance_id=self._instance_id, device_id=virtual_device_id
+            )
+            await self._mqtt.async_publish(topic, "", retain=True)
+            self._published_devices.discard(virtual_device_id)
+        elif new_all_entities:
+            await self._publish_selected_entities()
 
     async def _publish_all_devices(self) -> None:
         """Publish all selected devices with their entities."""
@@ -132,9 +140,18 @@ class Publisher:
             if device is None:
                 _LOGGER.warning("Selected device %s not found in registry", device_id)
                 continue
-            await self._publish_device(device)
+            await self._publish_device(device, readonly=False)
 
-    async def _publish_device(self, device: dr.DeviceEntry) -> None:
+        for device_id in self._readonly_devices:
+            device = dev_reg.async_get(device_id)
+            if device is None:
+                _LOGGER.warning("Selected device %s not found in registry", device_id)
+                continue
+            await self._publish_device(device, readonly=True)
+
+    async def _publish_device(
+        self, device: dr.DeviceEntry, readonly: bool = False
+    ) -> None:
         """Publish a single device and all its entities."""
         ent_reg = er.async_get(self._hass)
         entities = er.async_entries_for_device(ent_reg, device.id)
@@ -151,6 +168,7 @@ class Publisher:
                 "unit_of_measurement": entry.unit_of_measurement,
                 "icon": entry.icon or entry.original_icon,
                 "attributes": dict(state.attributes) if state else {},
+                "readonly": readonly,
             }
             entity_list.append(entity_data)
 
@@ -185,13 +203,15 @@ class Publisher:
 
     async def _publish_selected_entities(self) -> None:
         """Publish individually selected entities as a virtual device."""
-        if not self._selected_entities:
+        all_entities = list(self._selected_entities) + list(self._readonly_entities)
+        if not all_entities:
             return
 
         ent_reg = er.async_get(self._hass)
+        ro_set = set(self._readonly_entities)
         entity_list = []
 
-        for entity_id in self._selected_entities:
+        for entity_id in all_entities:
             entry = ent_reg.async_get(entity_id)
             state = self._hass.states.get(entity_id)
 
@@ -208,6 +228,7 @@ class Publisher:
                 "unit_of_measurement": entry.unit_of_measurement if entry else None,
                 "icon": (entry.icon or entry.original_icon) if entry else None,
                 "attributes": dict(state.attributes) if state else {},
+                "readonly": entity_id in ro_set,
             }
             entity_list.append(entity_data)
 

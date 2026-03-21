@@ -19,6 +19,8 @@ from .const import (
     CONF_INSTANCE_NAME,
     CONF_SELECTED_DEVICES,
     CONF_SELECTED_ENTITIES,
+    CONF_READONLY_DEVICES,
+    CONF_READONLY_ENTITIES,
     PLATFORMS,
     SharedHARuntimeData,
 )
@@ -110,4 +112,6 @@ async def _async_update_listener(
     await rt.publisher.async_update_selection(
         selected_devices=entry.data.get(CONF_SELECTED_DEVICES, []),
         selected_entities=entry.data.get(CONF_SELECTED_ENTITIES, []),
+        readonly_devices=entry.data.get(CONF_READONLY_DEVICES, []),
+        readonly_entities=entry.data.get(CONF_READONLY_ENTITIES, []),
     )

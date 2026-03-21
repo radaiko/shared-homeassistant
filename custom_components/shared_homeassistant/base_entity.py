@@ -36,6 +36,7 @@ class SharedBaseEntity(Entity):
         self._source_device_id = device_id
         self._remote_entity_id = entity_data["entity_id"]
         self._entity_prefix = entity_prefix
+        self._readonly = entity_data.get("readonly", False)
 
         # Build unique_id
         remote_unique = entity_data.get("unique_id", entity_data["entity_id"])
@@ -108,6 +109,13 @@ class SharedBaseEntity(Entity):
         self, service: str, service_data: dict[str, Any] | None = None
     ) -> None:
         """Send a command to the origin instance via MQTT."""
+        if self._readonly:
+            _LOGGER.warning(
+                "Cannot send command %s to read-only entity %s",
+                service,
+                self._remote_entity_id,
+            )
+            return
         data = service_data or {}
         data["entity_id"] = self._remote_entity_id
 
