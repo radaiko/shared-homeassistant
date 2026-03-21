@@ -62,6 +62,9 @@ class Subscriber:
         self._pending_states: dict[tuple[str, str], dict[str, Any]] = {}
         # Track which entities we've already requested history for
         self._history_requested: set[tuple[str, str]] = set()
+        # Queue for pending history requests
+        self._history_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
+        self._history_worker_started = False
 
     def register_platform(self, domain: str, async_add_entities: Any) -> None:
         """Register a platform's async_add_entities callback."""
@@ -193,18 +196,18 @@ class Subscriber:
 
             remote_eid = entity_data.get("entity_id")
 
-            # Request history if not already done for this entity
+            # Queue history request if not already done for this entity
             if remote_eid:
                 history_key = (instance_id, remote_eid)
                 if history_key not in self._history_requested:
                     self._history_requested.add(history_key)
-                    # Stagger requests to avoid overwhelming MQTT
-                    delay = len(self._history_requested) * 0.5
-                    self._hass.async_create_task(
-                        self._request_entity_history(
-                            instance_id, remote_eid, delay
+                    self._history_queue.put_nowait((instance_id, remote_eid))
+                    # Start the worker if not already running
+                    if not self._history_worker_started:
+                        self._history_worker_started = True
+                        self._hass.async_create_task(
+                            self._history_request_worker()
                         )
-                    )
 
             if unique_id in self._created_entities:
                 # Entity already exists, update it
@@ -362,19 +365,34 @@ class Subscriber:
                 "Removed shared device %s from instance %s", device_id, instance_id
             )
 
-    async def _request_entity_history(
-        self, source_instance_id: str, entity_id: str, delay: float = 2.0
-    ) -> None:
-        """Request history for a shared entity via the history consumer."""
-        await asyncio.sleep(max(delay, 2.0))
-        try:
-            history_consumer = self._config_entry.runtime_data.history_consumer
-            _LOGGER.info("Requesting history for %s", entity_id)
-            await history_consumer.async_request_history(source_instance_id, entity_id)
-        except Exception:
-            _LOGGER.warning(
-                "Failed to request history for %s from %s",
-                entity_id,
-                source_instance_id[:8],
-                exc_info=True,
-            )
+    async def _history_request_worker(self) -> None:
+        """Process history requests sequentially from the queue."""
+        # Wait for startup to settle
+        await asyncio.sleep(5)
+
+        while True:
+            try:
+                source_instance_id, entity_id = await asyncio.wait_for(
+                    self._history_queue.get(), timeout=30
+                )
+            except asyncio.TimeoutError:
+                # No more requests for 30 seconds, stop worker
+                self._history_worker_started = False
+                _LOGGER.debug("History request worker finished (queue empty)")
+                return
+
+            try:
+                history_consumer = self._config_entry.runtime_data.history_consumer
+                _LOGGER.info("Requesting history for %s", entity_id)
+                await history_consumer.async_request_history(
+                    source_instance_id, entity_id
+                )
+                # Small delay between requests to not overwhelm the source
+                await asyncio.sleep(1)
+            except Exception:
+                _LOGGER.warning(
+                    "Failed to request history for %s from %s",
+                    entity_id,
+                    source_instance_id[:8],
+                    exc_info=True,
+                )
