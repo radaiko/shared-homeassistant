@@ -287,7 +287,9 @@ class DashboardProxy:
             panel_url_path = f"shared-{instance_id[:8]}-{url_path}"
 
             # Use proxy path — solves mixed content (HTTPS→HTTP) and auth
-            dashboard_url = f"{PROXY_PATH}/{instance_id}/lovelace/{url_path}?kiosk"
+            # Each HA dashboard has its own panel URL (e.g. /energy-flow)
+            # NOT /lovelace/energy-flow (that's a view within the default dashboard)
+            dashboard_url = f"{PROXY_PATH}/{instance_id}/{url_path}?kiosk"
 
             frontend.async_register_built_in_panel(
                 self._hass,
