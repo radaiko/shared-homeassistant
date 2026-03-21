@@ -355,7 +355,7 @@ def _build_response_headers(resp: aiohttp.ClientResponse) -> dict[str, str]:
     """Build headers for the response back to the client."""
     return {
         k: v for k, v in resp.headers.items()
-        if k.lower() not in _STRIP_RESPONSE
+        if k.lower() not in _STRIP_RESPONSE and k.lower() != "content-type"
     }
 
 
@@ -457,6 +457,7 @@ class DashboardProxyHTTPView(HomeAssistantView):
                         status=resp.status,
                         headers=resp_headers,
                         body=raw,
+                        content_type=content_type,
                         content_type=content_type,
                     )
 
