@@ -59,6 +59,8 @@ class Subscriber:
         # Cache state messages for entities not yet created
         # {(instance_id, entity_id): {"state": ..., "attributes": ...}}
         self._pending_states: dict[tuple[str, str], dict[str, Any]] = {}
+        # Track which entities we've already requested history for
+        self._history_requested: set[tuple[str, str]] = set()
 
     def register_platform(self, domain: str, async_add_entities: Any) -> None:
         """Register a platform's async_add_entities callback."""
@@ -73,6 +75,19 @@ class Subscriber:
         # Subscribe to heartbeats
         heartbeat_topic = f"{TOPIC_PREFIX}/+/heartbeat"
         await self._mqtt.async_subscribe(heartbeat_topic, self._handle_heartbeat)
+
+        # Request history for all already-known entities on reconnect
+        for instance_id, devices in self._remote_devices.items():
+            for device_id, device_data in devices.items():
+                for entity_data in device_data.get("entities", []):
+                    remote_eid = entity_data.get("entity_id")
+                    if remote_eid:
+                        history_key = (instance_id, remote_eid)
+                        if history_key not in self._history_requested:
+                            self._history_requested.add(history_key)
+                            self._hass.async_create_task(
+                                self._request_entity_history(instance_id, remote_eid)
+                            )
 
     async def async_stop(self) -> None:
         """Stop subscribing and clean up."""
@@ -221,6 +236,14 @@ class Subscriber:
                             attributes=pending["attributes"],
                         )
 
+                    # Request history for newly created entity
+                    history_key = (instance_id, remote_eid)
+                    if history_key not in self._history_requested:
+                        self._history_requested.add(history_key)
+                        self._hass.async_create_task(
+                            self._request_entity_history(instance_id, remote_eid)
+                        )
+
                     _LOGGER.debug(
                         "Created shared entity %s from instance %s",
                         entity_data.get("entity_id"),
@@ -343,4 +366,17 @@ class Subscriber:
             dev_reg.async_remove_device(device.id)
             _LOGGER.debug(
                 "Removed shared device %s from instance %s", device_id, instance_id
+            )
+
+    async def _request_entity_history(
+        self, source_instance_id: str, entity_id: str
+    ) -> None:
+        """Request history for a shared entity via the history consumer."""
+        try:
+            history_consumer = self._config_entry.runtime_data.history_consumer
+            await history_consumer.async_request_history(source_instance_id, entity_id)
+        except Exception:
+            _LOGGER.debug(
+                "Could not request history for %s (history consumer not ready)",
+                entity_id,
             )
