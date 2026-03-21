@@ -2,16 +2,14 @@
 
 Share devices, entities, and dashboards between multiple Home Assistant instances using a central MQTT broker.
 
-> **Note:** Dashboard sharing requires `use_x_frame_options: false` on the source instance. No tokens are transmitted via MQTT for dashboard sharing — users authenticate directly with the source instance via a one-time login in the embedded dashboard.
-
 ## What it does
 
 - **Share devices and entities** from one HA instance to any number of other HA instances
-- **Share dashboards** — display a dashboard from one instance in another instance's sidebar, including custom JS cards, with live data and no entity sharing required
+- **Share dashboards** — display a dashboard from one instance in another instance's sidebar, including custom JS cards and SVGs, with live data — no entity sharing required
 - **Read-write or read-only sharing**: choose per device/entity whether other instances can control it or only see its state
 - **Bidirectional control**: shared read-write switches, lights, covers, and climate entities can be controlled from any instance — commands are forwarded back to the origin instance via MQTT
 - **Real-time state sync**: state changes are published instantly via MQTT with retained messages, so new instances receive the current state immediately on connect
-- **Automatic history transfer**: when an entity is first shared, its long-term statistics (hourly data) are automatically transferred to all receiving instances. After downtime, only the missing period is synced.
+- **Automatic history transfer**: when an entity is first shared, its long-term statistics (hourly data) are automatically transferred to all receiving instances. After downtime, only the missing period is synced
 - **Automatic availability tracking**: each instance publishes a heartbeat with MQTT Last Will — if an instance goes offline, its shared entities show as "unavailable" on all other instances
 - **Independent MQTT connection**: uses its own MQTT broker connection (via `aiomqtt`), separate from your existing HA MQTT integration — so your shared broker can be different from your local one
 
@@ -30,8 +28,8 @@ Share devices, entities, and dashboards between multiple Home Assistant instance
 ## What it does NOT do
 
 - **No sub-hourly history import** — history sync transfers long-term statistics (hourly aggregates). The detailed sub-minute state history from the source instance's last ~10 days is not transferred. New detailed history builds up locally from the moment the shared entity appears.
-- **No dashboard config sync** — dashboards are displayed via a live proxy to the source instance (not copied). The source instance must be reachable over the network.
-- **No automatic HACS card installation** — if you share entities that use custom frontend cards, those cards must be installed manually on each receiving instance.
+- **No dashboard config sync** — dashboards are displayed live from the source instance via an embedded iframe (not copied). The source instance must be reachable from the user's browser.
+- **No automatic HACS card installation** — if you share entities that use custom frontend cards, those cards must be installed manually on each receiving instance. Dashboard sharing does NOT have this limitation — custom cards are rendered by the source instance.
 - **No conflict resolution** — if two instances share entities with identical IDs, behavior is undefined.
 - **No TLS certificate verification** — TLS is supported but certificate validation is disabled (accepts any certificate).
 
@@ -99,8 +97,14 @@ Repeat the same setup steps on every other HA instance. Use the **same MQTT brok
 
 After setup, you can reconfigure the integration via **Settings → Integrations → Shared Home Assistant → Configure**:
 
+**Step 1 — Devices & Entities:**
 - **Update device/entity selection** — add or remove shared devices and entities, change between read-write and read-only
 - **Entity prefix** — set a prefix for received entities (e.g. `house` → entities appear as `sensor.house_temperature`)
+
+**Step 2 — Dashboard Sharing:**
+- **Enable dashboard sharing** — toggle on to share dashboards from this instance
+- **Instance URL** — the URL other instances use to reach this instance (e.g. `http://192.168.1.100:8123`)
+- **Dashboard selector** — choose which dashboards to share
 
 ## How it works
 
@@ -137,42 +141,59 @@ On subsequent reconnects (e.g. after an instance was offline for a day), only th
 
 ## Dashboard Sharing
 
-Share entire dashboards (including custom JS cards) from one instance to another without needing to share individual entities.
+Share entire dashboards (including custom JS cards and SVGs) from one instance to another without needing to share individual entities.
 
 ### How it works
 
-1. **Source instance** enables "Share dashboards" in options and sets its URL
-2. The integration generates a long-lived access token and publishes it (along with available dashboards) via MQTT
-3. **Receiving instances** automatically discover available dashboards and register them as sidebar panels
-4. When a user opens a shared dashboard, the integration proxies the request through the local instance, injecting the auth token — the user never sees a login prompt
-5. WebSocket connections are proxied too, so live state updates work in real-time
-6. Custom JS cards (HACS frontend plugins) work because they're rendered by the source instance
+1. **Source instance** enables "Share dashboards" in options, sets its URL, and selects which dashboards to share
+2. The dashboard list and URL are published via MQTT (no tokens or sensitive data)
+3. **Receiving instances** automatically discover available dashboards and add them to the sidebar
+4. When a user opens a shared dashboard, it loads directly from the source instance in an embedded iframe
+5. The HA frontend runs natively on the source — correct routing, WebSocket, kiosk mode, custom JS cards all work
+6. Users log in once in the iframe on first use — the session persists in the browser
 
 ### Setup (Source Instance)
 
-1. Go to **Settings → Integrations → Shared Home Assistant → Configure**
-2. Enable **"Share dashboards from this instance"**
-3. Set **"This instance's URL"** (e.g. `http://192.168.1.100:8123`)
-4. Click Submit
+**1. Add to `configuration.yaml`:**
 
-The dashboards will appear in the sidebar of all receiving instances automatically.
+```yaml
+http:
+  use_x_frame_options: false
+```
+
+This allows the dashboard to be embedded in an iframe on other instances. Restart after adding.
+
+**2. Configure in the integration:**
+
+1. Go to **Settings → Integrations → Shared Home Assistant → Configure**
+2. Step 1 (Devices & Entities): click Submit
+3. Step 2 (Dashboard Sharing):
+   - Enable **"Enable dashboard sharing"**
+   - Set **"This instance's URL"** (e.g. `http://192.168.1.100:8123`)
+   - Select which **dashboards to share**
+   - Click Submit
 
 ### Setup (Receiving Instance)
 
-No additional setup needed. Shared dashboards appear in the sidebar automatically when discovered via MQTT. The `?kiosk` parameter is appended automatically to hide the source instance's header and sidebar.
+No additional setup needed. Shared dashboards appear in the sidebar automatically when discovered via MQTT. The `?kiosk` parameter is appended automatically to hide the source instance's header and sidebar (requires [kiosk-mode](https://github.com/NemesisRE/kiosk-mode) installed on the source).
+
+### First use
+
+When you first open a shared dashboard, you'll see the source instance's login page inside the iframe. Log in once — the browser remembers the session for that instance. After that, the dashboard loads automatically on every visit.
 
 ### Security
 
-Dashboard sharing does **not** transmit any authentication tokens via MQTT. Only the source instance's URL and dashboard list are shared.
+- **No tokens transmitted via MQTT** — only the source URL and dashboard list are shared
+- Users authenticate directly with the source instance via standard HA login
+- The `use_x_frame_options: false` setting only allows embedding in iframes — it does not disable authentication or expose any data
 
-Users authenticate directly with the source instance via a standard HA login in the embedded iframe. The session persists in the browser — you only need to log in once.
+### What works through shared dashboards
 
-### Requirements
-
-- Source instance must have `use_x_frame_options: false` in `configuration.yaml` under `http:`
-- Source instance must be reachable from the user's browser (same network or VPN)
-- Kiosk mode (HACS) should be installed on the source instance for the cleanest embedded experience
-- Custom JS cards work natively since the source instance renders them
+- Custom Lovelace cards (including HACS cards)
+- Custom JS dashboards with SVGs and animations
+- Live data updates via WebSocket
+- Kiosk mode (hides header and sidebar)
+- All standard HA dashboard features
 
 ## MQTT Topic Structure
 
@@ -184,7 +205,7 @@ shared_ha/{instance_id}/heartbeat                                       # Online
 shared_ha/{instance_id}/history_request/{entity_id}                     # History data request (not retained)
 shared_ha/{instance_id}/history_response/{requester_id}/{entity_id}/{n} # History data chunks (not retained)
 shared_ha/{instance_id}/history_response/{requester_id}/{entity_id}/done # History transfer complete (not retained)
-shared_ha/{instance_id}/dashboards                                      # Dashboard info + auth token (retained)
+shared_ha/{instance_id}/dashboards                                      # Dashboard discovery info (retained)
 ```
 
 ## Troubleshooting
@@ -197,6 +218,14 @@ The entity was created but no state has been received yet. This can happen brief
 
 **History not appearing in graphs**
 History transfer imports hourly long-term statistics. It may take a moment after setup for the data to appear in history graphs. Check the HA logs for "Imported X statistics rows" messages. If the source entity has no long-term statistics yet (e.g. it was just created), there's nothing to transfer.
+
+**Shared dashboard shows login page**
+This is expected on first use. Log in once in the iframe — the session persists in the browser. If it keeps showing the login page, verify that `use_x_frame_options: false` is set in the source instance's `configuration.yaml` and that the source is reachable from your browser.
+
+**Shared dashboard not appearing in sidebar**
+- Verify the source instance has dashboard sharing enabled in options
+- Check that the source instance URL is correct and reachable
+- Check the MQTT broker for `shared_ha/+/dashboards` topics
 
 **Read-only entity still shows controls**
 The HA frontend may show toggle/slider controls for entity types like switches and lights even when they're shared as read-only. Attempting to use the control will have no effect — the command is blocked on the receiving instance.
