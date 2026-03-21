@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
-from homeassistant.components.sensor import SensorEntity
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -39,8 +40,18 @@ class SharedSensor(SharedBaseEntity, SensorEntity):
             self._attr_native_unit_of_measurement = entity_data["unit_of_measurement"]
 
     @property
-    def native_value(self) -> str | None:
+    def native_value(self) -> str | float | datetime | None:
         """Return the sensor value."""
+        if self._remote_state is None:
+            return None
+
+        # Timestamp sensors require a datetime object
+        if self._attr_device_class == SensorDeviceClass.TIMESTAMP:
+            try:
+                return datetime.fromisoformat(self._remote_state)
+            except (ValueError, TypeError):
+                return None
+
         return self._remote_state
 
     def _process_state_update(
