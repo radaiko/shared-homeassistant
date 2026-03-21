@@ -56,6 +56,9 @@ class Subscriber:
         self._platform_callbacks: dict[str, Any] = {}
         # Track created entities {unique_id: entity_object}
         self._created_entities: dict[str, Any] = {}
+        # Cache state messages for entities not yet created
+        # {(instance_id, entity_id): {"state": ..., "attributes": ...}}
+        self._pending_states: dict[tuple[str, str], dict[str, Any]] = {}
 
     def register_platform(self, domain: str, async_add_entities: Any) -> None:
         """Register a platform's async_add_entities callback."""
@@ -106,6 +109,16 @@ class Subscriber:
                     if entity:
                         self._created_entities[unique_id] = entity
                         result.append(entity)
+
+                        # Apply any pending state
+                        remote_eid = entity_data.get("entity_id")
+                        pending_key = (instance_id, remote_eid)
+                        if pending_key in self._pending_states:
+                            pending = self._pending_states.pop(pending_key)
+                            entity.update_state(
+                                state=pending["state"],
+                                attributes=pending["attributes"],
+                            )
         return result
 
     async def _handle_device(self, topic: str, payload: bytes) -> None:
@@ -197,6 +210,17 @@ class Subscriber:
                 if entity:
                     self._created_entities[unique_id] = entity
                     self._platform_callbacks[domain]([entity])
+
+                    # Apply any pending state that arrived before the entity was created
+                    remote_eid = entity_data.get("entity_id")
+                    pending_key = (instance_id, remote_eid)
+                    if pending_key in self._pending_states:
+                        pending = self._pending_states.pop(pending_key)
+                        entity.update_state(
+                            state=pending["state"],
+                            attributes=pending["attributes"],
+                        )
+
                     _LOGGER.debug(
                         "Created shared entity %s from instance %s",
                         entity_data.get("entity_id"),
@@ -236,6 +260,7 @@ class Subscriber:
         unique_id_prefix = f"shared_ha_{instance_id}_"
 
         # Find the matching created entity
+        found = False
         for uid, entity in self._created_entities.items():
             if uid.startswith(unique_id_prefix) and hasattr(entity, "_remote_entity_id"):
                 if entity._remote_entity_id == entity_id:
@@ -243,7 +268,15 @@ class Subscriber:
                         state=data.get("state"),
                         attributes=data.get("attributes", {}),
                     )
+                    found = True
                     break
+
+        # Cache the state if entity doesn't exist yet (retained messages may arrive before device)
+        if not found:
+            self._pending_states[(instance_id, entity_id)] = {
+                "state": data.get("state"),
+                "attributes": data.get("attributes", {}),
+            }
 
     async def _handle_heartbeat(self, topic: str, payload: bytes) -> None:
         """Handle heartbeat messages."""
