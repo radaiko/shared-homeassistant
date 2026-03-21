@@ -110,12 +110,18 @@ class Publisher:
             if device:
                 await self._publish_device(device)
 
-        # Publish new entities
-        ent_reg = er.async_get(self._hass)
-        for entity_id in new_entities - old_entities:
-            entry = ent_reg.async_get(entity_id)
-            if entry:
-                await self._publish_entity_state(entity_id)
+        # Republish virtual device with updated standalone entities
+        if old_entities != new_entities:
+            # Clear old virtual device if entities were removed and none remain
+            virtual_device_id = f"_standalone_{self._instance_id}"
+            if not new_entities and virtual_device_id in self._published_devices:
+                topic = TOPIC_DEVICE.format(
+                    instance_id=self._instance_id, device_id=virtual_device_id
+                )
+                await self._mqtt.async_publish(topic, "", retain=True)
+                self._published_devices.discard(virtual_device_id)
+            elif new_entities:
+                await self._publish_selected_entities()
 
     async def _publish_all_devices(self) -> None:
         """Publish all selected devices with their entities."""
@@ -178,11 +184,61 @@ class Publisher:
         _LOGGER.debug("Published device %s (%s)", device.name, device.id)
 
     async def _publish_selected_entities(self) -> None:
-        """Publish individually selected entities (not part of a device)."""
+        """Publish individually selected entities as a virtual device."""
+        if not self._selected_entities:
+            return
+
+        ent_reg = er.async_get(self._hass)
+        entity_list = []
+
         for entity_id in self._selected_entities:
+            entry = ent_reg.async_get(entity_id)
             state = self._hass.states.get(entity_id)
+
+            # Derive domain from entity_id if no registry entry
+            domain = entry.domain if entry else entity_id.split(".", 1)[0]
+            unique_id = entry.unique_id if entry else entity_id
+
+            entity_data = {
+                "entity_id": entity_id,
+                "unique_id": unique_id,
+                "domain": domain,
+                "name": (entry.name or entry.original_name or "") if entry else entity_id.split(".", 1)[-1],
+                "device_class": (entry.device_class or entry.original_device_class) if entry else None,
+                "unit_of_measurement": entry.unit_of_measurement if entry else None,
+                "icon": (entry.icon or entry.original_icon) if entry else None,
+                "attributes": dict(state.attributes) if state else {},
+            }
+            entity_list.append(entity_data)
+
+            # Also publish initial state
             if state:
                 await self._publish_entity_state(entity_id, state)
+
+        # Publish as a virtual device
+        virtual_device_id = f"_standalone_{self._instance_id}"
+        payload = {
+            "instance_id": self._instance_id,
+            "instance_name": self._instance_name,
+            "device_id": virtual_device_id,
+            "name": "Shared Entities",
+            "manufacturer": "Shared Home Assistant",
+            "model": "Virtual Device",
+            "sw_version": None,
+            "hw_version": None,
+            "identifiers": [],
+            "connections": [],
+            "entities": entity_list,
+        }
+
+        topic = TOPIC_DEVICE.format(
+            instance_id=self._instance_id, device_id=virtual_device_id
+        )
+        await self._mqtt.async_publish(topic, json.dumps(payload), retain=True)
+        self._published_devices.add(virtual_device_id)
+        _LOGGER.debug(
+            "Published %d standalone entities as virtual device", len(entity_list)
+        )
 
     async def _publish_entity_state(
         self, entity_id: str, state: State | None = None
