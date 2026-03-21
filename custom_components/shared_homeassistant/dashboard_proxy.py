@@ -367,33 +367,84 @@ def _rewrite_html(body: bytes, instance_id: str, original_path: str) -> bytes:
     # Rewrite absolute-path HTML attributes (src, href, etc.)
     body = _ABS_ATTR_RE.sub(lambda m: m.group(1) + prefix + m.group(2), body)
 
-    # Inject script to fix the frontend router path
-    # The HA frontend reads window.location to determine the current dashboard.
-    # Since we're in an iframe at /api/shared_ha/proxy/.../energy-flow,
-    # we need to make it think it's at /energy-flow.
-    router_fix = f"""<script>
+    # Also rewrite /manifest.json which is at root level
+    body = body.replace(
+        b'href="/manifest.json"',
+        f'href="{proxy_prefix}/manifest.json"'.encode(),
+    )
+
+    # Inject comprehensive proxy fix script
+    # This overrides WebSocket, fetch, and history APIs so the HA frontend
+    # routes all traffic through our proxy instead of the local instance.
+    proxy_fix = f"""<script>
     (function() {{
-        var proxyPrefix = "{proxy_prefix}";
-        // Override history.pushState/replaceState to strip proxy prefix
+        var P = "{proxy_prefix}";
+
+        // Override WebSocket to redirect /api/websocket to our proxy
+        var OrigWS = window.WebSocket;
+        window.WebSocket = function(url, protocols) {{
+            if (url && (url.indexOf("/api/websocket") !== -1)) {{
+                // Rewrite ws://host/api/websocket to ws://host/P/api/websocket
+                var u = new URL(url, location.href);
+                if (!u.pathname.startsWith(P)) {{
+                    u.pathname = P + u.pathname;
+                }}
+                url = u.toString();
+            }}
+            return protocols ? new OrigWS(url, protocols) : new OrigWS(url);
+        }};
+        window.WebSocket.prototype = OrigWS.prototype;
+        window.WebSocket.CONNECTING = OrigWS.CONNECTING;
+        window.WebSocket.OPEN = OrigWS.OPEN;
+        window.WebSocket.CLOSING = OrigWS.CLOSING;
+        window.WebSocket.CLOSED = OrigWS.CLOSED;
+
+        // Override fetch to redirect absolute API calls through proxy
+        var origFetch = window.fetch;
+        window.fetch = function(input, init) {{
+            if (typeof input === 'string' && input.startsWith('/') && !input.startsWith(P)) {{
+                input = P + input;
+            }} else if (input instanceof Request && input.url.startsWith(location.origin + '/')) {{
+                var path = input.url.substring(location.origin.length);
+                if (!path.startsWith(P)) {{
+                    input = new Request(location.origin + P + path, input);
+                }}
+            }}
+            return origFetch.call(this, input, init);
+        }};
+
+        // Override XMLHttpRequest to redirect through proxy
+        var origXHROpen = XMLHttpRequest.prototype.open;
+        XMLHttpRequest.prototype.open = function(method, url) {{
+            if (typeof url === 'string' && url.startsWith('/') && !url.startsWith(P)) {{
+                url = P + url;
+            }}
+            return origXHROpen.apply(this, [method, url, ...Array.prototype.slice.call(arguments, 2)]);
+        }};
+
+        // Override history to keep URLs within proxy prefix
         var origPush = history.pushState;
         var origReplace = history.replaceState;
         history.pushState = function(state, title, url) {{
-            if (url && typeof url === 'string' && !url.startsWith(proxyPrefix)) {{
-                url = proxyPrefix + url;
+            if (url && typeof url === 'string' && url.startsWith('/') && !url.startsWith(P)) {{
+                url = P + url;
             }}
             return origPush.call(this, state, title, url);
         }};
         history.replaceState = function(state, title, url) {{
-            if (url && typeof url === 'string' && !url.startsWith(proxyPrefix)) {{
-                url = proxyPrefix + url;
+            if (url && typeof url === 'string' && url.startsWith('/') && !url.startsWith(P)) {{
+                url = P + url;
             }}
             return origReplace.call(this, state, title, url);
         }};
     }})();
     </script>""".encode()
 
-    # Inject before </head>
-    body = body.replace(b"</head>", router_fix + b"</head>", 1)
+    # Inject as FIRST thing after <head> so it runs before any HA scripts
+    body = body.replace(b"<head>", b"<head>" + proxy_fix, 1)
+    # Also handle <head ...> with attributes
+    if b"<head>" not in body:
+        body = _HEAD_TAG_RE.sub(lambda m: m.group(0) + proxy_fix, body, count=1)
 
     return body
 
