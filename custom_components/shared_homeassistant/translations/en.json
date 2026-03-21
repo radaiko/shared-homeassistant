@@ -38,16 +38,23 @@
   "options": {
     "step": {
       "init": {
-        "title": "Shared Home Assistant Options",
-        "description": "Update sharing settings. Read-write allows control from other instances, read-only only shares the state.\n\n**Dashboard Sharing:** Enable to share dashboards from this instance. Requires the instance URL to be set. A long-lived access token will be generated and shared via MQTT — ensure your broker is secured with authentication and TLS.",
+        "title": "Devices & Entities",
+        "description": "Select which devices and entities to share. Read-write allows control from other instances, read-only only shares the state.",
         "data": {
           "selected_devices": "Devices (read-write)",
           "readonly_devices": "Devices (read-only)",
           "selected_entities": "Entities (read-write)",
           "readonly_entities": "Entities (read-only)",
-          "entity_prefix": "Prefix for received entities (e.g. 'house')",
-          "share_dashboards": "Share dashboards from this instance",
-          "instance_url": "This instance's URL (e.g. http://192.168.1.100:8123)"
+          "entity_prefix": "Prefix for received entities (e.g. 'house')"
+        }
+      },
+      "dashboards": {
+        "title": "Dashboard Sharing",
+        "description": "Share dashboards from this instance with other instances. They will appear in the sidebar of receiving instances.\n\n**Security Warning:** A long-lived access token will be generated and shared via MQTT. Ensure your MQTT broker uses authentication and TLS/SSL encryption.",
+        "data": {
+          "share_dashboards": "Enable dashboard sharing",
+          "instance_url": "This instance's URL (e.g. http://192.168.1.100:8123)",
+          "shared_dashboard_list": "Dashboards to share"
         }
       }
     }

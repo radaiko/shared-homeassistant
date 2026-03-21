@@ -14,6 +14,10 @@ from homeassistant.helpers.selector import (
     DeviceSelectorConfig,
     EntitySelector,
     EntitySelectorConfig,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+    SelectOptionDict,
     TextSelector,
     TextSelectorConfig,
     NumberSelector,
@@ -37,6 +41,7 @@ from .const import (
     CONF_READONLY_ENTITIES,
     CONF_ENTITY_PREFIX,
     CONF_SHARE_DASHBOARDS,
+    CONF_SHARED_DASHBOARD_LIST,
     CONF_INSTANCE_URL,
     DEFAULT_PORT,
     DEFAULT_ENTITY_PREFIX,
@@ -187,16 +192,17 @@ class SharedHAConfigFlow(ConfigFlow, domain=DOMAIN):
 class SharedHAOptionsFlow(OptionsFlow):
     """Handle options flow for Shared Home Assistant."""
 
+    def __init__(self) -> None:
+        """Initialize options flow."""
+        self._data: dict[str, Any] = {}
+
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Manage the options."""
+        """Step 1: Entity sharing options."""
         if user_input is not None:
-            new_data = {**self.config_entry.data, **user_input}
-            self.hass.config_entries.async_update_entry(
-                self.config_entry, data=new_data
-            )
-            return self.async_create_entry(title="", data={})
+            self._data.update(user_input)
+            return await self.async_step_dashboards()
 
         current = self.config_entry.data
 
@@ -226,15 +232,81 @@ class SharedHAOptionsFlow(OptionsFlow):
                     CONF_ENTITY_PREFIX,
                     default=current.get(CONF_ENTITY_PREFIX, DEFAULT_ENTITY_PREFIX),
                 ): TextSelector(TextSelectorConfig(type="text")),
-                vol.Optional(
-                    CONF_SHARE_DASHBOARDS,
-                    default=current.get(CONF_SHARE_DASHBOARDS, False),
-                ): BooleanSelector(),
-                vol.Optional(
-                    CONF_INSTANCE_URL,
-                    default=current.get(CONF_INSTANCE_URL, ""),
-                ): TextSelector(TextSelectorConfig(type="url")),
             }
         )
 
         return self.async_show_form(step_id="init", data_schema=schema)
+
+    async def async_step_dashboards(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Step 2: Dashboard sharing options."""
+        if user_input is not None:
+            self._data.update(user_input)
+            # Save all data
+            new_data = {**self.config_entry.data, **self._data}
+            self.hass.config_entries.async_update_entry(
+                self.config_entry, data=new_data
+            )
+            return self.async_create_entry(title="", data={})
+
+        current = self.config_entry.data
+
+        # Build dashboard options dynamically
+        dashboard_options = await self._get_dashboard_options()
+
+        schema_dict: dict[Any, Any] = {
+            vol.Optional(
+                CONF_SHARE_DASHBOARDS,
+                default=current.get(CONF_SHARE_DASHBOARDS, False),
+            ): BooleanSelector(),
+            vol.Optional(
+                CONF_INSTANCE_URL,
+                default=current.get(CONF_INSTANCE_URL, ""),
+            ): TextSelector(TextSelectorConfig(type="url")),
+        }
+
+        if dashboard_options:
+            schema_dict[vol.Optional(
+                CONF_SHARED_DASHBOARD_LIST,
+                default=current.get(CONF_SHARED_DASHBOARD_LIST, []),
+            )] = SelectSelector(
+                SelectSelectorConfig(
+                    options=dashboard_options,
+                    multiple=True,
+                    mode=SelectSelectorMode.LIST,
+                )
+            )
+
+        return self.async_show_form(
+            step_id="dashboards",
+            data_schema=vol.Schema(schema_dict),
+        )
+
+    async def _get_dashboard_options(self) -> list[SelectOptionDict]:
+        """Get available dashboards as selector options."""
+        options: list[SelectOptionDict] = []
+        try:
+            from homeassistant.components.lovelace.const import LOVELACE_DATA
+
+            lovelace_data = self.hass.data.get(LOVELACE_DATA)
+            if lovelace_data is None:
+                return options
+
+            for url_path, dashboard in lovelace_data.dashboards.items():
+                if url_path is None:
+                    options.append(
+                        SelectOptionDict(value="lovelace", label="Overview (default)")
+                    )
+                else:
+                    title = url_path
+                    if hasattr(dashboard, "config") and isinstance(
+                        dashboard.config, dict
+                    ):
+                        title = dashboard.config.get("title", url_path)
+                    options.append(
+                        SelectOptionDict(value=url_path, label=title)
+                    )
+        except Exception:
+            pass
+        return options
