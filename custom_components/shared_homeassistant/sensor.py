@@ -42,11 +42,14 @@ class SharedSensor(SharedBaseEntity, SensorEntity):
     @property
     def native_value(self) -> str | float | datetime | None:
         """Return the sensor value."""
-        if self._remote_state is None:
+        if self._remote_state is None or self._remote_state in (
+            "unavailable", "unknown",
+        ):
             return None
 
         # Timestamp sensors require a datetime object
-        if self._attr_device_class == SensorDeviceClass.TIMESTAMP:
+        device_class = getattr(self, "_attr_device_class", None)
+        if device_class == SensorDeviceClass.TIMESTAMP:
             try:
                 return datetime.fromisoformat(self._remote_state)
             except (ValueError, TypeError):

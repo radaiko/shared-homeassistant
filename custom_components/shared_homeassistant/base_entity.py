@@ -98,9 +98,16 @@ class SharedBaseEntity(Entity):
 
     def update_state(self, state: str | None, attributes: dict[str, Any]) -> None:
         """Update entity state from a state message."""
-        self._remote_state = state
+        # Handle unavailable/unknown from source
+        if state in ("unavailable", "unknown"):
+            self._attr_available = state != "unavailable"
+            self._remote_state = None
+        else:
+            self._attr_available = True
+            self._remote_state = state
+
         self._remote_attributes = attributes
-        self._process_state_update(state, attributes)
+        self._process_state_update(self._remote_state, attributes)
         if self.hass:
             self.async_write_ha_state()
 

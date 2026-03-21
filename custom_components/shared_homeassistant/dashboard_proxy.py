@@ -115,9 +115,13 @@ class DashboardProxy:
 
         # Register proxy HTTP views (only once per HA lifetime)
         if not self._hass.data.get(_VIEW_KEY):
-            # Register WS view first (more specific path)
-            self._hass.http.register_view(DashboardProxyWSView(self))
-            self._hass.http.register_view(DashboardProxyHTTPView(self))
+            try:
+                # Register WS view first (more specific path)
+                self._hass.http.register_view(DashboardProxyWSView(self))
+                self._hass.http.register_view(DashboardProxyHTTPView(self))
+            except ValueError:
+                # Views already registered from a previous load
+                _LOGGER.debug("Proxy views already registered")
             self._hass.data[_VIEW_KEY] = True
 
     async def async_stop(self) -> None:
