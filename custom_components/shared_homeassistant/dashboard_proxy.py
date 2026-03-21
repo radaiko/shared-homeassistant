@@ -305,7 +305,7 @@ class DashboardProxy:
                 sidebar_icon=icon,
                 frontend_url_path=panel_url_path,
                 config={
-                    "url": f"{PROXY_PATH}/{instance_id}/{url_path}?kiosk"
+                    "url": f"{PROXY_PATH}/{instance_id}/lovelace/{url_path}?kiosk"
                 },
                 require_admin=False,
                 update=True,
@@ -439,49 +439,28 @@ def _rewrite_html(body: bytes, instance_id: str, original_path: str) -> bytes:
             return origReplace.call(this, state, title, url);
         }};
 
-        // The HA frontend reads location.pathname to determine the current
-        // dashboard. We need it to see "/lovelace/energy-flow" instead of
-        // "/api/shared_ha/proxy/.../energy-flow".
-        // Create a proxy (ES6 Proxy) around location that strips our prefix.
-        var fakeLocation = new Proxy(location, {{
-            get: function(target, prop) {{
-                var val = target[prop];
-                if (prop === 'pathname') {{
-                    if (val.startsWith(P)) {{
-                        var stripped = val.substring(P.length) || '/';
-                        // Add /lovelace prefix if not present
-                        if (!stripped.startsWith('/lovelace') && stripped !== '/') {{
-                            stripped = '/lovelace' + stripped;
-                        }}
-                        return stripped;
-                    }}
-                }}
-                if (prop === 'href') {{
-                    return val.replace(P, '');
-                }}
-                if (typeof val === 'function') {{
-                    return val.bind(target);
-                }}
-                return val;
-            }}
-        }});
+        // Navigate to the correct dashboard.
+        // Step 1: Set location.pathname to the clean dashboard path
+        //         (without proxy prefix) so the HA router can read it.
+        // Step 2: The fetch/WS/XHR overrides add the proxy prefix
+        //         for actual network requests.
+        // Step 3: pushState/replaceState overrides add the proxy prefix
+        //         for subsequent navigations.
+        var targetPath = location.pathname;
+        if (targetPath.startsWith(P)) {{
+            var cleanPath = targetPath.substring(P.length) || "/";
+            // Set clean path WITHOUT proxy prefix — this is what the HA router reads
+            origReplace.call(history, null, "", cleanPath + location.search);
 
-        // Override document.location and window.location getters
-        try {{
-            Object.defineProperty(document, 'location', {{
-                get: function() {{ return fakeLocation; }},
-                configurable: true,
+            // After HA frontend initializes, trigger navigation
+            window.addEventListener("DOMContentLoaded", function() {{
+                var attempts = 0;
+                var navInterval = setInterval(function() {{
+                    attempts++;
+                    window.dispatchEvent(new CustomEvent("location-changed"));
+                    if (attempts > 10) clearInterval(navInterval);
+                }}, 500);
             }});
-        }} catch(e) {{}}
-
-        // Set initial URL with /lovelace prefix for router
-        var initPath = location.pathname;
-        if (initPath.startsWith(P + "/")) {{
-            var dashPath = initPath.substring(P.length);
-            if (!dashPath.startsWith("/lovelace") && dashPath !== "/") {{
-                dashPath = "/lovelace" + dashPath;
-            }}
-            origReplace.call(history, null, "", P + dashPath);
         }}
     }})();
     </script>""".encode()
