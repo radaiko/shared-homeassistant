@@ -243,10 +243,6 @@ class DashboardProxy:
         if not info:
             return
 
-        remote_url = info.get("url", "").rstrip("/")
-        if not remote_url:
-            return
-
         for dashboard in info.get("dashboards", []):
             url_path = dashboard.get("url_path", "")
             title = dashboard.get("title", url_path)
@@ -254,8 +250,8 @@ class DashboardProxy:
 
             panel_url_path = f"shared-{instance_id[:8]}-{url_path}"
 
-            # Point directly to the remote HA instance's dashboard
-            dashboard_url = f"{remote_url}/lovelace/{url_path}?kiosk"
+            # Use proxy path — solves mixed content (HTTPS→HTTP) and auth
+            dashboard_url = f"{PROXY_PATH}/{instance_id}/lovelace/{url_path}?kiosk"
 
             frontend.async_register_built_in_panel(
                 self._hass,
@@ -485,45 +481,17 @@ def _unused_rewrite_html(body: bytes, instance_id: str, original_path: str) -> b
             return origXHROpen.apply(this, [method, url, ...Array.prototype.slice.call(arguments, 2)]);
         }};
 
-        // Override history.pushState/replaceState to add proxy prefix
-        // so browser requests go through our proxy
-        var origPush = history.pushState;
-        var origReplace = history.replaceState;
-        history.pushState = function(state, title, url) {{
-            if (url && typeof url === 'string' && url.startsWith('/') && !url.startsWith(P)) {{
-                url = P + url;
-            }}
-            return origPush.call(this, state, title, url);
-        }};
-        history.replaceState = function(state, title, url) {{
-            if (url && typeof url === 'string' && url.startsWith('/') && !url.startsWith(P)) {{
-                url = P + url;
-            }}
-            return origReplace.call(this, state, title, url);
-        }};
+        // Do NOT override history.pushState/replaceState — let the HA
+        // router work with clean paths (no proxy prefix). Only network
+        // requests (fetch/WS/XHR) need the proxy prefix.
 
-        // Navigate to the correct dashboard.
-        // Step 1: Set location.pathname to the clean dashboard path
-        //         (without proxy prefix) so the HA router can read it.
-        // Step 2: The fetch/WS/XHR overrides add the proxy prefix
-        //         for actual network requests.
-        // Step 3: pushState/replaceState overrides add the proxy prefix
-        //         for subsequent navigations.
+        // Set location.pathname to the clean dashboard path so the HA
+        // router shows the correct dashboard on load.
+        var origReplace = history.replaceState.bind(history);
         var targetPath = location.pathname;
         if (targetPath.startsWith(P)) {{
             var cleanPath = targetPath.substring(P.length) || "/";
-            // Set clean path WITHOUT proxy prefix — this is what the HA router reads
-            origReplace.call(history, null, "", cleanPath + location.search);
-
-            // After HA frontend initializes, trigger navigation
-            window.addEventListener("DOMContentLoaded", function() {{
-                var attempts = 0;
-                var navInterval = setInterval(function() {{
-                    attempts++;
-                    window.dispatchEvent(new CustomEvent("location-changed"));
-                    if (attempts > 10) clearInterval(navInterval);
-                }}, 500);
-            }});
+            origReplace(null, "", cleanPath + location.search);
         }}
     }})();
     </script>""".encode()
@@ -563,9 +531,22 @@ class DashboardProxyHTTPView(HomeAssistantView):
             return web.Response(status=404, text="Unknown instance")
 
         remote_url = info["url"].rstrip("/")
+        token = info.get("token", "")
+        session = info.get("session")
 
-        # Serve a wrapper that iframes the remote dashboard directly
-        return self._serve_iframe_wrapper(remote_url, path, request.query_string)
+        # Create a session if needed (for proxying)
+        if not session or session.closed:
+            session = aiohttp.ClientSession(
+                connector=aiohttp.TCPConnector(ssl=False),
+                timeout=aiohttp.ClientTimeout(total=60, connect=10),
+            )
+            info["session"] = session
+
+        # Proxy all requests through the local instance
+        # This solves: mixed content (HTTPS→HTTP), X-Frame-Options, and auth
+        return await self._proxy_request(
+            request, instance_id, remote_url, token, session, path
+        )
 
     def _serve_iframe_wrapper(
         self, remote_url: str, path: str, query_string: str
