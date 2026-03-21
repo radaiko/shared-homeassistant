@@ -23,7 +23,7 @@ _LOGGER = logging.getLogger(__name__)
 
 # Storage key for tracking last imported timestamps
 STORAGE_KEY = "shared_homeassistant_history"
-STORAGE_VERSION = 2  # Bumped to clear stale data from failed imports
+STORAGE_VERSION = 1
 
 
 class HistoryProvider:
@@ -467,13 +467,30 @@ class HistoryConsumer:
         from homeassistant.helpers.storage import Store
 
         store = Store(self._hass, STORAGE_VERSION, STORAGE_KEY)
-        data = await store.async_load()
+        try:
+            data = await store.async_load()
+        except Exception:
+            _LOGGER.warning("Could not load history state, starting fresh")
+            data = None
+
         if data and isinstance(data, dict):
-            self._last_imported = data.get("last_imported", {})
+            version = data.get("version", 0)
+            if version < 2:
+                # Clear stale data from failed imports with older versions
+                _LOGGER.info("Clearing stale history import state (upgrading)")
+                self._last_imported = {}
+                await self._save_state()
+            else:
+                self._last_imported = data.get("last_imported", {})
+        else:
+            self._last_imported = {}
 
     async def _save_state(self) -> None:
         """Save last imported timestamps to HA storage."""
         from homeassistant.helpers.storage import Store
 
         store = Store(self._hass, STORAGE_VERSION, STORAGE_KEY)
-        await store.async_save({"last_imported": self._last_imported})
+        await store.async_save({
+            "version": 2,
+            "last_imported": self._last_imported,
+        })
