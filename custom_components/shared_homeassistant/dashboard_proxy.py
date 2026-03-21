@@ -384,7 +384,7 @@ class DashboardProxyHTTPView(HomeAssistantView):
 
     url = f"{PROXY_PATH}/{{instance_id}}/{{path:.*}}"
     name = "api:shared_ha:proxy"
-    requires_auth = True
+    requires_auth = False  # Auth handled by remote token; local access via sidebar
 
     def __init__(self, proxy: DashboardProxy) -> None:
         """Initialize the proxy view."""
@@ -486,7 +486,7 @@ class DashboardProxyWSView(HomeAssistantView):
 
     url = f"{PROXY_PATH}/{{instance_id}}/api/websocket"
     name = "api:shared_ha:proxy:ws"
-    requires_auth = True
+    requires_auth = False  # Auth handled by remote token
 
     def __init__(self, proxy: DashboardProxy) -> None:
         """Initialize the WS proxy view."""
