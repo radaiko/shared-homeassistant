@@ -148,12 +148,20 @@ class DashboardProxy:
 
 
     async def _publish_dashboard_info(self) -> None:
-        """Publish available dashboards to MQTT for discovery."""
+        """Publish available dashboards and auth token to MQTT.
+
+        The token is needed by the receiving instance's proxy to authenticate
+        WebSocket connections to this instance. It is NOT used by the browser.
+        """
+        # Generate a token for the proxy to use
+        token = await self._generate_token()
+
         dashboards = await self._get_dashboard_list()
 
         payload = {
             "instance_id": self._instance_id,
             "url": self._instance_url,
+            "token": token or "",
             "dashboards": dashboards,
         }
 
@@ -162,6 +170,33 @@ class DashboardProxy:
         _LOGGER.info(
             "Published dashboard info with %d dashboards", len(dashboards)
         )
+
+    async def _generate_token(self) -> str | None:
+        """Generate a long-lived access token for proxy authentication."""
+        try:
+            user = await self._hass.auth.async_get_owner()
+            if user is None:
+                for u in await self._hass.auth.async_get_users():
+                    if u.is_owner or u.is_admin:
+                        user = u
+                        break
+
+            if user is None:
+                _LOGGER.error("No admin user found, cannot generate dashboard token")
+                return None
+
+            from datetime import timedelta
+
+            refresh_token = await self._hass.auth.async_create_refresh_token(
+                user,
+                client_name=f"Shared HA Dashboard ({self._instance_id[:8]})",
+                token_type="long_lived_access_token",
+                access_token_expiration=timedelta(days=365),
+            )
+            return self._hass.auth.async_create_access_token(refresh_token)
+        except Exception:
+            _LOGGER.exception("Failed to generate dashboard access token")
+            return None
 
     async def _get_dashboard_list(self) -> list[dict[str, str]]:
         """Get list of dashboards from Lovelace."""
@@ -224,6 +259,7 @@ class DashboardProxy:
 
         self._remote_instances[instance_id] = {
             "url": data.get("url", ""),
+            "token": data.get("token", ""),
             "dashboards": data.get("dashboards", []),
         }
 
@@ -532,9 +568,9 @@ class DashboardProxyHTTPView(HomeAssistantView):
 
         remote_url = info["url"].rstrip("/")
         token = info.get("token", "")
-        session = info.get("session")
 
-        # Create a session if needed (for proxying)
+        # Create/reuse a session for proxying
+        session = info.get("session")
         if not session or session.closed:
             session = aiohttp.ClientSession(
                 connector=aiohttp.TCPConnector(ssl=False),
@@ -542,8 +578,7 @@ class DashboardProxyHTTPView(HomeAssistantView):
             )
             info["session"] = session
 
-        # Proxy all requests through the local instance
-        # This solves: mixed content (HTTPS→HTTP), X-Frame-Options, and auth
+        # Proxy all requests — solves mixed content (HTTPS→HTTP) and auth
         return await self._proxy_request(
             request, instance_id, remote_url, token, session, path
         )

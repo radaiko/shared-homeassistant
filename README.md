@@ -183,8 +183,8 @@ When you first open a shared dashboard, you'll see the source instance's login p
 
 ### Security
 
-- **No tokens transmitted via MQTT** — only the source URL and dashboard list are shared
-- Users authenticate directly with the source instance via standard HA login
+- An access token is transmitted via MQTT for the server-side proxy to authenticate WebSocket connections. **Secure your MQTT broker with authentication and TLS if you enable dashboard sharing.**
+- Users see the source instance's frontend proxied through the local instance — no direct browser-to-source connection needed
 - The `use_x_frame_options: false` setting only allows embedding in iframes — it does not disable authentication or expose any data
 
 ### What works through shared dashboards
