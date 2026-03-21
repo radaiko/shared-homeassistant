@@ -359,16 +359,41 @@ def _build_response_headers(resp: aiohttp.ClientResponse) -> dict[str, str]:
     }
 
 
-def _rewrite_html(body: bytes, instance_id: str) -> bytes:
+def _rewrite_html(body: bytes, instance_id: str, original_path: str) -> bytes:
     """Rewrite absolute paths in HTML to go through the proxy."""
     prefix = f"{PROXY_PATH}/{instance_id}".encode()
+    proxy_prefix = f"{PROXY_PATH}/{instance_id}"
 
-    # Inject <base href> after <head> tag
-    base_tag = f'<base href="{PROXY_PATH}/{instance_id}/">'.encode()
-    body = _HEAD_TAG_RE.sub(lambda m: m.group(0) + base_tag, body, count=1)
-
-    # Rewrite absolute-path HTML attributes
+    # Rewrite absolute-path HTML attributes (src, href, etc.)
     body = _ABS_ATTR_RE.sub(lambda m: m.group(1) + prefix + m.group(2), body)
+
+    # Inject script to fix the frontend router path
+    # The HA frontend reads window.location to determine the current dashboard.
+    # Since we're in an iframe at /api/shared_ha/proxy/.../energy-flow,
+    # we need to make it think it's at /energy-flow.
+    router_fix = f"""<script>
+    (function() {{
+        var proxyPrefix = "{proxy_prefix}";
+        // Override history.pushState/replaceState to strip proxy prefix
+        var origPush = history.pushState;
+        var origReplace = history.replaceState;
+        history.pushState = function(state, title, url) {{
+            if (url && typeof url === 'string' && !url.startsWith(proxyPrefix)) {{
+                url = proxyPrefix + url;
+            }}
+            return origPush.call(this, state, title, url);
+        }};
+        history.replaceState = function(state, title, url) {{
+            if (url && typeof url === 'string' && !url.startsWith(proxyPrefix)) {{
+                url = proxyPrefix + url;
+            }}
+            return origReplace.call(this, state, title, url);
+        }};
+    }})();
+    </script>""".encode()
+
+    # Inject before </head>
+    body = body.replace(b"</head>", router_fix + b"</head>", 1)
 
     return body
 
@@ -440,7 +465,7 @@ class DashboardProxyHTTPView(HomeAssistantView):
                 if "text/html" in content_type:
                     raw = await resp.read()
                     if len(raw) <= _MAX_REWRITE_SIZE:
-                        raw = _rewrite_html(raw, instance_id)
+                        raw = _rewrite_html(raw, instance_id, path)
                     return web.Response(
                         status=resp.status,
                         headers=resp_headers,
