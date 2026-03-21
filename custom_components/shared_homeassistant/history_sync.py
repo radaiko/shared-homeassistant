@@ -40,10 +40,14 @@ class HistoryProvider:
         self._mqtt = mqtt_client
         self._instance_id = instance_id
 
-    async def async_start(self) -> None:
-        """Start listening for history requests."""
+    async def async_register_subscriptions(self) -> None:
+        """Pre-register MQTT subscriptions (before connect)."""
         topic = f"{TOPIC_PREFIX}/{self._instance_id}/history_request/#"
         await self._mqtt.async_subscribe(topic, self._handle_history_request)
+
+    async def async_start(self) -> None:
+        """Start (subscriptions already registered)."""
+        pass
 
     async def async_stop(self) -> None:
         """Stop listening."""
@@ -252,12 +256,13 @@ class HistoryConsumer:
         # Track metadata per entity from first chunk
         self._metadata_buffer: dict[tuple[str, str], dict] = {}
 
-    async def async_start(self) -> None:
-        """Start listening for history responses."""
-        # Subscribe to responses directed at us
+    async def async_register_subscriptions(self) -> None:
+        """Pre-register MQTT subscriptions (before connect)."""
         topic = f"{TOPIC_PREFIX}/+/history_response/{self._instance_id}/#"
         await self._mqtt.async_subscribe(topic, self._handle_history_response)
 
+    async def async_start(self) -> None:
+        """Start (subscriptions already registered)."""
         # Load last imported timestamps from storage
         await self._load_state()
 

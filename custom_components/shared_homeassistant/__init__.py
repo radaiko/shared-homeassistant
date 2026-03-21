@@ -68,6 +68,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: SharedHAConfigEntry) -> 
         dashboard_proxy=dashboard_proxy,
     )
 
+    # Pre-register all MQTT subscriptions BEFORE connecting
+    # This ensures they are in _subscriptions and will be (re)subscribed
+    # on every connect/reconnect, even during unstable startup
+    await subscriber.async_register_subscriptions()
+    await history_provider.async_register_subscriptions()
+    await history_consumer.async_register_subscriptions()
+    await dashboard_proxy.async_register_subscriptions()
+
     # Connect to MQTT
     try:
         await mqtt_client.async_connect()

@@ -71,14 +71,16 @@ class Subscriber:
         self._platform_callbacks[domain] = async_add_entities
         _LOGGER.debug("Registered platform callback for %s", domain)
 
-    async def async_start(self) -> None:
-        """Start subscribing to shared devices and states."""
+    async def async_register_subscriptions(self) -> None:
+        """Pre-register MQTT subscriptions (before connect)."""
         await self._mqtt.async_subscribe(TOPIC_SUB_DEVICES, self._handle_device)
         await self._mqtt.async_subscribe(TOPIC_SUB_STATES, self._handle_state)
-
-        # Subscribe to heartbeats
         heartbeat_topic = f"{TOPIC_PREFIX}/+/heartbeat"
         await self._mqtt.async_subscribe(heartbeat_topic, self._handle_heartbeat)
+
+    async def async_start(self) -> None:
+        """Start processing (subscriptions already registered)."""
+        pass  # Subscriptions registered in async_register_subscriptions
 
     async def async_stop(self) -> None:
         """Stop subscribing and clean up."""

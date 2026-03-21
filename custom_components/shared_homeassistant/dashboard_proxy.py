@@ -102,13 +102,14 @@ class DashboardProxy:
         self._remote_instances: dict[str, dict[str, Any]] = {}
         self._auth_token: str | None = None
 
-    async def async_start(self) -> None:
-        """Start dashboard proxy services."""
-        # Subscribe to dashboard info from other instances
+    async def async_register_subscriptions(self) -> None:
+        """Pre-register MQTT subscriptions (before connect)."""
         await self._mqtt.async_subscribe(
             TOPIC_SUB_DASHBOARD_INFO, self._handle_dashboard_info
         )
 
+    async def async_start(self) -> None:
+        """Start dashboard proxy services (subscriptions already registered)."""
         # If we're sharing dashboards, generate token and publish
         if self._share_dashboards and self._instance_url:
             await self._generate_and_publish_token()
