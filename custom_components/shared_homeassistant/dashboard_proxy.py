@@ -364,10 +364,6 @@ def _rewrite_html_proxy(body: bytes, instance_id: str, original_path: str) -> by
         f'href="{proxy_prefix}/manifest.json"'.encode(),
     )
 
-    # Extract the dashboard path from the proxy URL
-    # e.g. "lovelace/energy-flow" → "/lovelace/energy-flow"
-    dash_path = "/" + original_path if not original_path.startswith("/") else original_path
-
     # Inject script that overrides WebSocket, fetch, XHR to go through proxy,
     # and navigates to the correct dashboard after load
     proxy_script = f"""<script>
@@ -426,26 +422,6 @@ def _rewrite_html_proxy(body: bytes, instance_id: str, original_path: str) -> by
             return origReplace.call(this, state, title, url);
         }};
 
-        // After HA loads, navigate to the correct dashboard.
-        // Use setTimeout chain because HA frontend init is async.
-        var dashPath = "{dash_path}";
-        var navigated = false;
-        function tryNavigate() {{
-            if (navigated) return;
-            // Check if HA has initialized by looking for the ha-panel-lovelace element
-            var panel = document.querySelector("home-assistant");
-            if (panel && panel.shadowRoot) {{
-                navigated = true;
-                // Use HA's navigate function via custom event
-                window.dispatchEvent(new CustomEvent("haptic", {{detail: "light"}}));
-                // Navigate by updating URL and firing location-changed
-                origReplace.call(history, null, "", P + dashPath + location.search);
-                window.dispatchEvent(new CustomEvent("location-changed"));
-                return;
-            }}
-            setTimeout(tryNavigate, 200);
-        }}
-        setTimeout(tryNavigate, 500);
     }})();
     </script>""".encode()
 
@@ -519,17 +495,37 @@ def _unused_rewrite_html(body: bytes, instance_id: str, original_path: str) -> b
             return origXHROpen.apply(this, [method, url, ...Array.prototype.slice.call(arguments, 2)]);
         }};
 
-        // Do NOT override history.pushState/replaceState — let the HA
-        // router work with clean paths (no proxy prefix). Only network
-        // requests (fetch/WS/XHR) need the proxy prefix.
+        // Set the clean dashboard path and protect it from being overwritten
+        // by HA's router during initialization.
+        var origPush = history.pushState;
+        var origReplace = history.replaceState;
+        var targetDashPath = "";
+        var dashLoaded = false;
 
-        // Set location.pathname to the clean dashboard path so the HA
-        // router shows the correct dashboard on load.
-        var origReplace = history.replaceState.bind(history);
         var targetPath = location.pathname;
         if (targetPath.startsWith(P)) {{
-            var cleanPath = targetPath.substring(P.length) || "/";
-            origReplace(null, "", cleanPath + location.search);
+            targetDashPath = targetPath.substring(P.length) || "/";
+            // Set initial clean path
+            origReplace.call(history, null, "", targetDashPath + location.search);
+
+            // Temporarily block HA from changing the path during init
+            // (HA's router calls replaceState with /lovelace/0 on startup)
+            history.replaceState = function(state, title, url) {{
+                if (!dashLoaded && typeof url === 'string') {{
+                    // Keep our target path during initialization
+                    return origReplace.call(this, state, title, targetDashPath + location.search);
+                }}
+                return origReplace.call(this, state, title, url);
+            }};
+            history.pushState = function(state, title, url) {{
+                if (!dashLoaded && typeof url === 'string') {{
+                    return origPush.call(this, state, title, targetDashPath + location.search);
+                }}
+                return origPush.call(this, state, title, url);
+            }};
+
+            // Stop blocking after the dashboard has loaded
+            setTimeout(function() {{ dashLoaded = true; }}, 5000);
         }}
     }})();
     </script>""".encode()
