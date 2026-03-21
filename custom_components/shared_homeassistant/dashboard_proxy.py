@@ -428,6 +428,20 @@ def _rewrite_html_proxy(body: bytes, instance_id: str, original_path: str) -> by
             }});
         }} catch(e) {{}}
 
+        // Pre-populate auth tokens so the HA frontend doesn't show login.
+        // The WS proxy handles real auth — this just prevents the login screen.
+        if (!proxyStorage.getItem("hassTokens")) {{
+            proxyStorage.setItem("hassTokens", JSON.stringify({{
+                "access_token": "proxy-managed",
+                "token_type": "Bearer",
+                "refresh_token": "proxy-managed",
+                "expires_in": 999999,
+                "hassUrl": location.origin,
+                "clientId": location.origin + "/",
+                "expires": Date.now() + 999999999
+            }}));
+        }}
+
         // Override WebSocket
         var OrigWS = window.WebSocket;
         window.WebSocket = function(url, protocols) {{
@@ -464,36 +478,13 @@ def _rewrite_html_proxy(body: bytes, instance_id: str, original_path: str) -> by
             return origXHROpen.apply(this, [method, url].concat(Array.prototype.slice.call(arguments, 2)));
         }};
 
-        // Set the clean dashboard path and lock it during HA init.
-        // HA's router calls replaceState with /lovelace/0 on startup,
-        // which overwrites our target path. We block that for 5 seconds.
-        var origPush = history.pushState;
+        // Set the clean dashboard path so the HA router navigates correctly.
+        // The HA frontend reads location.pathname on init to determine the panel.
         var origReplace = history.replaceState;
-        var targetDashPath = "";
-        var dashLoaded = false;
-
         var targetPath = location.pathname;
         if (targetPath.startsWith(P)) {{
-            targetDashPath = targetPath.substring(P.length) || "/";
-            // Set initial clean path for HA router
-            origReplace.call(history, null, "", targetDashPath + location.search);
-
-            // Lock: force target path during initialization
-            history.replaceState = function(state, title, url) {{
-                if (!dashLoaded) {{
-                    return origReplace.call(this, state, title, targetDashPath + location.search);
-                }}
-                return origReplace.call(this, state, title, url);
-            }};
-            history.pushState = function(state, title, url) {{
-                if (!dashLoaded) {{
-                    return origPush.call(this, state, title, targetDashPath + location.search);
-                }}
-                return origPush.call(this, state, title, url);
-            }};
-
-            // Unlock after 5 seconds
-            setTimeout(function() {{ dashLoaded = true; }}, 5000);
+            var cleanPath = targetPath.substring(P.length) || "/";
+            origReplace.call(history, null, "", cleanPath + location.search);
         }}
     }})();
     </script>""".encode()
