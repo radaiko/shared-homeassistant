@@ -894,8 +894,11 @@ class DashboardProxyWSView(HomeAssistantView):
                 # Forward auth_ok to browser
                 await local_ws.send_json(auth_result)
 
-            # Bidirectional proxy
-            async def forward(src, dst):
+            # Bidirectional proxy with path rewriting
+            proxy_prefix = f"{PROXY_PATH}/{instance_id}"
+
+            async def forward_browser_to_remote(src, dst):
+                """Forward messages from browser to remote (no rewriting)."""
                 async for msg in src:
                     if msg.type == WSMsgType.TEXT:
                         await dst.send_str(msg.data)
@@ -904,9 +907,28 @@ class DashboardProxyWSView(HomeAssistantView):
                     elif msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
                         break
 
+            async def forward_remote_to_browser(src, dst):
+                """Forward messages from remote to browser, rewriting resource URLs."""
+                async for msg in src:
+                    if msg.type == WSMsgType.TEXT:
+                        data = msg.data
+                        # Rewrite /local/ and /hacsfiles/ paths in WS responses
+                        # so the browser loads custom card JS through the proxy
+                        if "/local/" in data or "/hacsfiles/" in data:
+                            data = data.replace(
+                                '"/local/', f'"{proxy_prefix}/local/'
+                            ).replace(
+                                '"/hacsfiles/', f'"{proxy_prefix}/hacsfiles/'
+                            )
+                        await dst.send_str(data)
+                    elif msg.type == WSMsgType.BINARY:
+                        await dst.send_bytes(msg.data)
+                    elif msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
+                        break
+
             await asyncio.gather(
-                forward(local_ws, remote_ws),
-                forward(remote_ws, local_ws),
+                forward_browser_to_remote(local_ws, remote_ws),
+                forward_remote_to_browser(remote_ws, local_ws),
                 return_exceptions=True,
             )
 
