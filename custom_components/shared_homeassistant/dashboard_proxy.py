@@ -422,7 +422,8 @@ def _rewrite_html(body: bytes, instance_id: str, original_path: str) -> bytes:
             return origXHROpen.apply(this, [method, url, ...Array.prototype.slice.call(arguments, 2)]);
         }};
 
-        // Override history to keep URLs within proxy prefix
+        // Override history.pushState/replaceState to add proxy prefix
+        // so browser requests go through our proxy
         var origPush = history.pushState;
         var origReplace = history.replaceState;
         history.pushState = function(state, title, url) {{
@@ -437,6 +438,51 @@ def _rewrite_html(body: bytes, instance_id: str, original_path: str) -> bytes:
             }}
             return origReplace.call(this, state, title, url);
         }};
+
+        // The HA frontend reads location.pathname to determine the current
+        // dashboard. We need it to see "/lovelace/energy-flow" instead of
+        // "/api/shared_ha/proxy/.../energy-flow".
+        // Create a proxy (ES6 Proxy) around location that strips our prefix.
+        var fakeLocation = new Proxy(location, {{
+            get: function(target, prop) {{
+                var val = target[prop];
+                if (prop === 'pathname') {{
+                    if (val.startsWith(P)) {{
+                        var stripped = val.substring(P.length) || '/';
+                        // Add /lovelace prefix if not present
+                        if (!stripped.startsWith('/lovelace') && stripped !== '/') {{
+                            stripped = '/lovelace' + stripped;
+                        }}
+                        return stripped;
+                    }}
+                }}
+                if (prop === 'href') {{
+                    return val.replace(P, '');
+                }}
+                if (typeof val === 'function') {{
+                    return val.bind(target);
+                }}
+                return val;
+            }}
+        }});
+
+        // Override document.location and window.location getters
+        try {{
+            Object.defineProperty(document, 'location', {{
+                get: function() {{ return fakeLocation; }},
+                configurable: true,
+            }});
+        }} catch(e) {{}}
+
+        // Set initial URL with /lovelace prefix for router
+        var initPath = location.pathname;
+        if (initPath.startsWith(P + "/")) {{
+            var dashPath = initPath.substring(P.length);
+            if (!dashPath.startsWith("/lovelace") && dashPath !== "/") {{
+                dashPath = "/lovelace" + dashPath;
+            }}
+            origReplace.call(history, null, "", P + dashPath);
+        }}
     }})();
     </script>""".encode()
 
