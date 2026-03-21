@@ -105,14 +105,15 @@ class HistoryProvider:
         # Query statistics from the recorder
         try:
             stats = await get_instance(self._hass).async_add_executor_job(
-                statistics_during_period,
-                self._hass,
-                start_time,
-                None,  # end_time = now
-                {entity_id},
-                "hour",
-                None,  # units
-                {"start", "state", "mean", "min", "max", "sum", "last_reset"},
+                lambda: statistics_during_period(
+                    self._hass,
+                    start_time,
+                    None,  # end_time = now
+                    {entity_id},
+                    "hour",
+                    None,  # units
+                    {"start", "state", "mean", "min", "max", "sum", "last_reset"},
+                )
             )
         except Exception:
             _LOGGER.exception("Failed to query statistics for %s", entity_id)
@@ -131,7 +132,7 @@ class HistoryProvider:
             from homeassistant.components.recorder.statistics import get_metadata
 
             metadata_result = await get_instance(self._hass).async_add_executor_job(
-                get_metadata, self._hass, statistic_ids={entity_id}
+                lambda: get_metadata(self._hass, statistic_ids={entity_id})
             )
         except Exception:
             _LOGGER.exception("Failed to get metadata for %s", entity_id)

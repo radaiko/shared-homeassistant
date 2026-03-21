@@ -143,9 +143,9 @@ class MQTTClient:
                                 "Error in MQTT callback for topic %s", topic
                             )
         except aiomqtt.MqttError as err:
+            self._connected.clear()
             if not self._shutdown:
                 _LOGGER.warning("MQTT connection lost: %s", err)
-                self._connected.clear()
                 self._reconnect_task = asyncio.create_task(self._reconnect())
 
     async def _reconnect(self) -> None:
