@@ -42,12 +42,22 @@ class SharedBaseEntity(Entity):
         remote_unique = entity_data.get("unique_id", entity_data["entity_id"])
         self._attr_unique_id = f"shared_ha_{instance_id}_{remote_unique}"
 
-        # Build display name
-        name = entity_data.get("name") or entity_data["entity_id"].split(".", 1)[-1]
+        # Use the source entity_id directly so the local entity gets the same ID
+        remote_entity_id = entity_data["entity_id"]
+        if entity_prefix:
+            # With a prefix: sensor.living_room → sensor.{prefix}_living_room
+            domain_part, object_id = remote_entity_id.split(".", 1)
+            self.entity_id = f"{domain_part}.{entity_prefix}_{object_id}"
+        else:
+            self.entity_id = remote_entity_id
+
+        # Use the source entity's friendly name from attributes, or fall back to the name field
+        friendly_name = entity_data.get("attributes", {}).get("friendly_name")
+        name = friendly_name or entity_data.get("name") or remote_entity_id.split(".", 1)[-1]
         if entity_prefix:
             self._attr_name = f"{entity_prefix} {name}"
         else:
-            self._attr_name = f"{instance_name} {name}"
+            self._attr_name = name
 
         # Device class and icon
         if entity_data.get("device_class"):
