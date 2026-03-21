@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any
+
+_LOGGER = logging.getLogger(__name__)
 
 import voluptuous as vol
 
@@ -243,13 +246,16 @@ class SharedHAOptionsFlow(OptionsFlow):
         """Step 2: Dashboard sharing options."""
         if user_input is not None:
             self._data.update(user_input)
-            # Save all data to config entry
-            new_data = {**self.config_entry.data, **self._data}
+            # Merge with existing config entry data (preserve broker/instance config)
+            existing = dict(self.config_entry.data) if self.config_entry.data else {}
+            if not existing:
+                _LOGGER.error("Config entry data is empty! Cannot save options.")
+                return self.async_create_entry(title="", data={})
+            new_data = {**existing, **self._data}
             self.hass.config_entries.async_update_entry(
                 self.config_entry, data=new_data
             )
-            # Return options with all data so the update listener fires
-            return self.async_create_entry(title="", data=self._data)
+            return self.async_create_entry(title="", data={})
 
         current = self.config_entry.data
 
