@@ -609,10 +609,32 @@ class DashboardProxyHTTPView(HomeAssistantView):
         token = info["token"]
         session = info["session"]
 
-        # Proxy all requests to the remote instance
+        # For dashboard pages, serve a wrapper that iframes the remote directly
+        if path.startswith("lovelace/") or path == "lovelace":
+            return self._serve_iframe_wrapper(remote_url, path, request.query_string)
+
+        # For all other requests, proxy directly
         return await self._proxy_request(
             request, instance_id, remote_url, token, session, path
         )
+
+    def _serve_iframe_wrapper(
+        self, remote_url: str, path: str, query_string: str
+    ) -> web.Response:
+        """Serve a wrapper page that directly iframes the remote HA dashboard."""
+        url = f"{remote_url}/{path}"
+        if query_string:
+            url += f"?{query_string}"
+
+        wrapper = f"""<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<style>html,body{{margin:0;padding:0;height:100%;overflow:hidden}}iframe{{width:100%;height:100%;border:none}}</style>
+</head><body>
+<iframe src="{url}" allow="fullscreen"></iframe>
+</body></html>"""
+
+        return web.Response(status=200, text=wrapper, content_type="text/html")
 
     async def _serve_dashboard_wrapper(
         self,
