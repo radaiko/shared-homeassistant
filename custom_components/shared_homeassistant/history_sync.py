@@ -23,7 +23,7 @@ _LOGGER = logging.getLogger(__name__)
 
 # Storage key for tracking last imported timestamps
 STORAGE_KEY = "shared_homeassistant_history"
-STORAGE_VERSION = 1
+STORAGE_VERSION = 2  # Bumped to clear stale data from failed imports
 
 
 class HistoryProvider:
@@ -332,8 +332,15 @@ class HistoryConsumer:
         stats_rows = self._chunk_buffer.pop(key, [])
         metadata = self._metadata_buffer.pop(key, None)
 
+        _LOGGER.info(
+            "Finalizing history import for %s: %d rows, metadata=%s",
+            entity_id,
+            len(stats_rows),
+            "yes" if metadata else "no",
+        )
+
         if not stats_rows or not metadata:
-            _LOGGER.debug(
+            _LOGGER.info(
                 "No history data to import for %s from %s (%d chunks)",
                 entity_id,
                 source_id,
@@ -441,7 +448,13 @@ class HistoryConsumer:
                 source_id,
             )
         except Exception:
-            _LOGGER.exception("Failed to import statistics for %s", entity_id)
+            _LOGGER.error(
+                "Failed to import statistics for %s (meta=%s, rows=%d)",
+                entity_id,
+                meta_dict,
+                len(stat_list),
+                exc_info=True,
+            )
             return
 
         # Update last imported timestamp
