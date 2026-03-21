@@ -210,7 +210,13 @@ class DashboardProxy:
                 return []
 
             result = []
+            seen = set()
             for url_path, dashboard in lovelace_data.dashboards.items():
+                effective_path = url_path or "lovelace"
+                if effective_path in seen:
+                    continue
+                seen.add(effective_path)
+
                 if url_path is None:
                     if not self._shared_dashboard_list or "lovelace" in self._shared_dashboard_list:
                         result.append({
