@@ -592,19 +592,34 @@ class DashboardProxyWSView(HomeAssistantView):
         try:
             remote_ws = await session.ws_connect(ws_url, heartbeat=30)
 
-            # Handle HA auth handshake with the remote
+            # HA WS auth flow:
+            # 1. Remote sends auth_required → forward to browser
+            # 2. Browser sends auth (with local token) → intercept, replace with remote token
+            # 3. Remote sends auth_ok → forward to browser
             auth_msg = await remote_ws.receive_json()
             if auth_msg.get("type") == "auth_required":
+                # Forward auth_required to browser
+                await local_ws.send_json(auth_msg)
+
+                # Wait for browser's auth message (it will send a local token)
+                browser_auth = await local_ws.receive_json()
+
+                # Replace with our remote token
                 await remote_ws.send_json(
                     {"type": "auth", "access_token": token}
                 )
+
+                # Wait for remote's auth result
                 auth_result = await remote_ws.receive_json()
                 if auth_result.get("type") != "auth_ok":
-                    await local_ws.close(code=4001, message=b"Remote auth failed")
+                    await local_ws.send_json(
+                        {"type": "auth_invalid", "message": "Remote auth failed"}
+                    )
+                    await local_ws.close()
                     return local_ws
 
-            # Send auth_ok to the local frontend
-            await local_ws.send_json({"type": "auth_ok"})
+                # Forward auth_ok to browser
+                await local_ws.send_json(auth_result)
 
             # Bidirectional proxy
             async def forward(src, dst):
