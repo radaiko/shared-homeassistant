@@ -458,7 +458,6 @@ class DashboardProxyHTTPView(HomeAssistantView):
                         headers=resp_headers,
                         body=raw,
                         content_type=content_type,
-                        content_type=content_type,
                     )
 
                 # Stream all other responses
