@@ -359,6 +359,112 @@ def _build_response_headers(resp: aiohttp.ClientResponse) -> dict[str, str]:
     }
 
 
+def _rewrite_html_proxy(body: bytes, instance_id: str, original_path: str) -> bytes:
+    """Rewrite HTML for proxy: replace all absolute paths and inject overrides."""
+    prefix = f"{PROXY_PATH}/{instance_id}".encode()
+    proxy_prefix = f"{PROXY_PATH}/{instance_id}"
+
+    # Rewrite absolute-path HTML attributes
+    body = _ABS_ATTR_RE.sub(lambda m: m.group(1) + prefix + m.group(2), body)
+
+    # Rewrite /manifest.json
+    body = body.replace(
+        b'href="/manifest.json"',
+        f'href="{proxy_prefix}/manifest.json"'.encode(),
+    )
+
+    # Extract the dashboard path from the proxy URL
+    # e.g. "lovelace/energy-flow" → "/lovelace/energy-flow"
+    dash_path = "/" + original_path if not original_path.startswith("/") else original_path
+
+    # Inject script that overrides WebSocket, fetch, XHR to go through proxy,
+    # and navigates to the correct dashboard after load
+    proxy_script = f"""<script>
+    (function() {{
+        var P = "{proxy_prefix}";
+
+        // Override WebSocket
+        var OrigWS = window.WebSocket;
+        window.WebSocket = function(url, protocols) {{
+            if (url) {{
+                var u = new URL(url, location.href);
+                if (!u.pathname.startsWith(P)) {{
+                    u.pathname = P + u.pathname;
+                }}
+                url = u.toString();
+            }}
+            return protocols ? new OrigWS(url, protocols) : new OrigWS(url);
+        }};
+        window.WebSocket.prototype = OrigWS.prototype;
+        window.WebSocket.CONNECTING = OrigWS.CONNECTING;
+        window.WebSocket.OPEN = OrigWS.OPEN;
+        window.WebSocket.CLOSING = OrigWS.CLOSING;
+        window.WebSocket.CLOSED = OrigWS.CLOSED;
+
+        // Override fetch
+        var origFetch = window.fetch;
+        window.fetch = function(input, init) {{
+            if (typeof input === 'string' && input.startsWith('/') && !input.startsWith(P)) {{
+                input = P + input;
+            }}
+            return origFetch.call(this, input, init);
+        }};
+
+        // Override XMLHttpRequest
+        var origXHROpen = XMLHttpRequest.prototype.open;
+        XMLHttpRequest.prototype.open = function(method, url) {{
+            if (typeof url === 'string' && url.startsWith('/') && !url.startsWith(P)) {{
+                url = P + url;
+            }}
+            return origXHROpen.apply(this, [method, url].concat(Array.prototype.slice.call(arguments, 2)));
+        }};
+
+        // Override history to add proxy prefix for URL bar
+        var origPush = history.pushState;
+        var origReplace = history.replaceState;
+        history.pushState = function(state, title, url) {{
+            if (url && typeof url === 'string' && url.startsWith('/') && !url.startsWith(P)) {{
+                url = P + url;
+            }}
+            return origPush.call(this, state, title, url);
+        }};
+        history.replaceState = function(state, title, url) {{
+            if (url && typeof url === 'string' && url.startsWith('/') && !url.startsWith(P)) {{
+                url = P + url;
+            }}
+            return origReplace.call(this, state, title, url);
+        }};
+
+        // After HA loads, navigate to the correct dashboard.
+        // Use setTimeout chain because HA frontend init is async.
+        var dashPath = "{dash_path}";
+        var navigated = false;
+        function tryNavigate() {{
+            if (navigated) return;
+            // Check if HA has initialized by looking for the ha-panel-lovelace element
+            var panel = document.querySelector("home-assistant");
+            if (panel && panel.shadowRoot) {{
+                navigated = true;
+                // Use HA's navigate function via custom event
+                window.dispatchEvent(new CustomEvent("haptic", {{detail: "light"}}));
+                // Navigate by updating URL and firing location-changed
+                origReplace.call(history, null, "", P + dashPath + location.search);
+                window.dispatchEvent(new CustomEvent("location-changed"));
+                return;
+            }}
+            setTimeout(tryNavigate, 200);
+        }}
+        setTimeout(tryNavigate, 500);
+    }})();
+    </script>""".encode()
+
+    body = body.replace(b"<head>", b"<head>" + proxy_script, 1)
+    if b"<head>" not in body:
+        body = _HEAD_TAG_RE.sub(lambda m: m.group(0) + proxy_script, body, count=1)
+
+    return body
+
+
 def _unused_rewrite_html(body: bytes, instance_id: str, original_path: str) -> bytes:
     """Rewrite absolute paths in HTML to go through the proxy."""
     prefix = f"{PROXY_PATH}/{instance_id}".encode()
@@ -503,19 +609,7 @@ class DashboardProxyHTTPView(HomeAssistantView):
         token = info["token"]
         session = info["session"]
 
-        # For the initial dashboard page (HTML), serve a wrapper with signed URL
-        if path.startswith("lovelace/") or path in ("lovelace", ""):
-            return await self._serve_dashboard_wrapper(
-                request, instance_id, remote_url, token, session, path
-            )
-
-        # For the sign-url API endpoint
-        if path == "_sign_url":
-            return await self._handle_sign_url(
-                request, instance_id, remote_url, token, session
-            )
-
-        # For all other requests, proxy directly
+        # Proxy all requests to the remote instance
         return await self._proxy_request(
             request, instance_id, remote_url, token, session, path
         )
@@ -671,6 +765,7 @@ class DashboardProxyHTTPView(HomeAssistantView):
                 allow_redirects=False,
             ) as resp:
                 resp_headers = _build_response_headers(resp)
+                content_type = resp.headers.get("Content-Type", "")
 
                 if resp.status == 304:
                     return web.Response(status=304, headers=resp_headers)
@@ -683,7 +778,19 @@ class DashboardProxyHTTPView(HomeAssistantView):
                         )
                     return web.Response(status=resp.status, headers=resp_headers)
 
-                # Stream the response
+                # For HTML, rewrite paths and inject proxy scripts
+                if "text/html" in content_type:
+                    raw = await resp.read()
+                    if len(raw) <= _MAX_REWRITE_SIZE:
+                        raw = _rewrite_html_proxy(raw, instance_id, path)
+                    return web.Response(
+                        status=resp.status,
+                        headers=resp_headers,
+                        body=raw,
+                        content_type="text/html",
+                    )
+
+                # Stream all other responses
                 response = web.StreamResponse(
                     status=resp.status, headers=resp_headers
                 )
