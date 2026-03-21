@@ -2,7 +2,7 @@
 
 Share devices, entities, and dashboards between multiple Home Assistant instances using a central MQTT broker.
 
-> **SECURITY WARNING:** When dashboard sharing is enabled, a long-lived access token is generated and transmitted via MQTT. **You MUST secure your MQTT broker with authentication (username/password) and TLS/SSL encryption.** An unsecured broker would expose full admin access to your Home Assistant instance to anyone who can read the MQTT messages.
+> **Note:** Dashboard sharing requires `use_x_frame_options: false` on the source instance. No tokens are transmitted via MQTT for dashboard sharing — users authenticate directly with the source instance via a one-time login in the embedded dashboard.
 
 ## What it does
 
@@ -163,20 +163,16 @@ No additional setup needed. Shared dashboards appear in the sidebar automaticall
 
 ### Security
 
-> **IMPORTANT:** Dashboard sharing transmits a Home Assistant access token via MQTT. This token grants access to the source instance's API.
+Dashboard sharing does **not** transmit any authentication tokens via MQTT. Only the source instance's URL and dashboard list are shared.
 
-**You MUST:**
-- Enable **authentication** on your MQTT broker (username + password)
-- Enable **TLS/SSL encryption** on your MQTT broker
-- Use a **dedicated MQTT broker** for sharing (not your IoT device broker)
+Users authenticate directly with the source instance via a standard HA login in the embedded iframe. The session persists in the browser — you only need to log in once.
 
-**If your MQTT broker is compromised**, an attacker could extract the token and gain full access to the source HA instance. Treat the MQTT broker as a trust boundary.
+### Requirements
 
-### Limitations
-
-- The source instance must be reachable from the receiving instance over HTTP (same network or VPN)
-- Custom JS cards must be installed on the source instance only (they're rendered there)
+- Source instance must have `use_x_frame_options: false` in `configuration.yaml` under `http:`
+- Source instance must be reachable from the user's browser (same network or VPN)
 - Kiosk mode (HACS) should be installed on the source instance for the cleanest embedded experience
+- Custom JS cards work natively since the source instance renders them
 
 ## MQTT Topic Structure
 

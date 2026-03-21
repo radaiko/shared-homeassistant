@@ -100,7 +100,6 @@ class DashboardProxy:
 
         # Remote instance data: {instance_id: {url, token, session, dashboards}}
         self._remote_instances: dict[str, dict[str, Any]] = {}
-        self._auth_token: str | None = None
 
     async def async_update_config(self, config: dict[str, Any]) -> None:
         """Update config and re-publish dashboard info if needed."""
@@ -109,7 +108,7 @@ class DashboardProxy:
         self._shared_dashboard_list = config.get(CONF_SHARED_DASHBOARD_LIST, [])
 
         if self._share_dashboards and self._instance_url:
-            await self._generate_and_publish_token()
+            await self._publish_dashboard_info()
         else:
             # Clear published dashboard info
             topic = TOPIC_DASHBOARD_INFO.format(instance_id=self._instance_id)
@@ -125,7 +124,7 @@ class DashboardProxy:
         """Start dashboard proxy services (subscriptions already registered)."""
         # If we're sharing dashboards, generate token and publish
         if self._share_dashboards and self._instance_url:
-            await self._generate_and_publish_token()
+            await self._publish_dashboard_info()
 
         # Register proxy HTTP views (only once per HA lifetime)
         if not self._hass.data.get(_VIEW_KEY):
@@ -147,47 +146,14 @@ class DashboardProxy:
             topic = TOPIC_DASHBOARD_INFO.format(instance_id=self._instance_id)
             await self._mqtt.async_publish(topic, "", retain=True)
 
-        # Close all client sessions
-        for info in self._remote_instances.values():
-            session = info.get("session")
-            if session and not session.closed:
-                await session.close()
 
-    async def _generate_and_publish_token(self) -> None:
-        """Generate a long-lived token and publish dashboard info via MQTT."""
-        try:
-            user = await self._hass.auth.async_get_owner()
-            if user is None:
-                for u in await self._hass.auth.async_get_users():
-                    if u.is_owner or u.is_admin:
-                        user = u
-                        break
-
-            if user is None:
-                _LOGGER.error("No admin user found, cannot generate dashboard token")
-                return
-
-            from datetime import timedelta
-
-            refresh_token = await self._hass.auth.async_create_refresh_token(
-                user,
-                client_name=f"Shared HA Dashboard ({self._instance_id[:8]})",
-                token_type="long_lived_access_token",
-                access_token_expiration=timedelta(days=365),
-            )
-            self._auth_token = self._hass.auth.async_create_access_token(
-                refresh_token
-            )
-        except Exception:
-            _LOGGER.exception("Failed to generate dashboard access token")
-            return
-
+    async def _publish_dashboard_info(self) -> None:
+        """Publish available dashboards to MQTT for discovery."""
         dashboards = await self._get_dashboard_list()
 
         payload = {
             "instance_id": self._instance_id,
             "url": self._instance_url,
-            "token": self._auth_token,
             "dashboards": dashboards,
         }
 
@@ -248,9 +214,7 @@ class DashboardProxy:
 
         if not payload:
             self._remove_panels(instance_id)
-            old = self._remote_instances.pop(instance_id, None)
-            if old and old.get("session") and not old["session"].closed:
-                await old["session"].close()
+            self._remote_instances.pop(instance_id, None)
             return
 
         try:
@@ -258,21 +222,9 @@ class DashboardProxy:
         except (json.JSONDecodeError, UnicodeDecodeError):
             return
 
-        # Create a persistent client session for this remote instance
-        old = self._remote_instances.get(instance_id)
-        if old and old.get("session") and not old["session"].closed:
-            session = old["session"]
-        else:
-            session = aiohttp.ClientSession(
-                connector=aiohttp.TCPConnector(ssl=False),
-                timeout=aiohttp.ClientTimeout(total=60, connect=10),
-            )
-
         self._remote_instances[instance_id] = {
             "url": data.get("url", ""),
-            "token": data.get("token", ""),
             "dashboards": data.get("dashboards", []),
-            "session": session,
         }
 
         _LOGGER.info(
@@ -606,17 +558,9 @@ class DashboardProxyHTTPView(HomeAssistantView):
             return web.Response(status=404, text="Unknown instance")
 
         remote_url = info["url"].rstrip("/")
-        token = info["token"]
-        session = info["session"]
 
-        # For dashboard pages, serve a wrapper that iframes the remote directly
-        if path.startswith("lovelace/") or path == "lovelace":
-            return self._serve_iframe_wrapper(remote_url, path, request.query_string)
-
-        # For all other requests, proxy directly
-        return await self._proxy_request(
-            request, instance_id, remote_url, token, session, path
-        )
+        # Serve a wrapper that iframes the remote dashboard directly
+        return self._serve_iframe_wrapper(remote_url, path, request.query_string)
 
     def _serve_iframe_wrapper(
         self, remote_url: str, path: str, query_string: str
