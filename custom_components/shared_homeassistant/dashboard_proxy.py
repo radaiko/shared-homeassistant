@@ -102,6 +102,19 @@ class DashboardProxy:
         self._remote_instances: dict[str, dict[str, Any]] = {}
         self._auth_token: str | None = None
 
+    async def async_update_config(self, config: dict[str, Any]) -> None:
+        """Update config and re-publish dashboard info if needed."""
+        self._instance_url = config.get(CONF_INSTANCE_URL, "")
+        self._share_dashboards = config.get(CONF_SHARE_DASHBOARDS, False)
+        self._shared_dashboard_list = config.get(CONF_SHARED_DASHBOARD_LIST, [])
+
+        if self._share_dashboards and self._instance_url:
+            await self._generate_and_publish_token()
+        else:
+            # Clear published dashboard info
+            topic = TOPIC_DASHBOARD_INFO.format(instance_id=self._instance_id)
+            await self._mqtt.async_publish(topic, "", retain=True)
+
     async def async_register_subscriptions(self) -> None:
         """Pre-register MQTT subscriptions (before connect)."""
         await self._mqtt.async_subscribe(

@@ -153,3 +153,4 @@ async def _async_update_listener(
         readonly_devices=entry.data.get(CONF_READONLY_DEVICES, []),
         readonly_entities=entry.data.get(CONF_READONLY_ENTITIES, []),
     )
+    await rt.dashboard_proxy.async_update_config(entry.data)
