@@ -76,19 +76,6 @@ class Subscriber:
         heartbeat_topic = f"{TOPIC_PREFIX}/+/heartbeat"
         await self._mqtt.async_subscribe(heartbeat_topic, self._handle_heartbeat)
 
-        # Request history for all already-known entities on reconnect
-        for instance_id, devices in self._remote_devices.items():
-            for device_id, device_data in devices.items():
-                for entity_data in device_data.get("entities", []):
-                    remote_eid = entity_data.get("entity_id")
-                    if remote_eid:
-                        history_key = (instance_id, remote_eid)
-                        if history_key not in self._history_requested:
-                            self._history_requested.add(history_key)
-                            self._hass.async_create_task(
-                                self._request_entity_history(instance_id, remote_eid)
-                            )
-
     async def async_stop(self) -> None:
         """Stop subscribing and clean up."""
         await self._mqtt.async_unsubscribe(TOPIC_SUB_DEVICES)
@@ -203,6 +190,17 @@ class Subscriber:
 
             unique_id = f"shared_ha_{instance_id}_{entity_data.get('unique_id', entity_data.get('entity_id'))}"
 
+            remote_eid = entity_data.get("entity_id")
+
+            # Request history if not already done for this entity
+            if remote_eid:
+                history_key = (instance_id, remote_eid)
+                if history_key not in self._history_requested:
+                    self._history_requested.add(history_key)
+                    self._hass.async_create_task(
+                        self._request_entity_history(instance_id, remote_eid)
+                    )
+
             if unique_id in self._created_entities:
                 # Entity already exists, update it
                 entity = self._created_entities[unique_id]
@@ -227,21 +225,12 @@ class Subscriber:
                     self._platform_callbacks[domain]([entity])
 
                     # Apply any pending state that arrived before the entity was created
-                    remote_eid = entity_data.get("entity_id")
                     pending_key = (instance_id, remote_eid)
                     if pending_key in self._pending_states:
                         pending = self._pending_states.pop(pending_key)
                         entity.update_state(
                             state=pending["state"],
                             attributes=pending["attributes"],
-                        )
-
-                    # Request history for newly created entity
-                    history_key = (instance_id, remote_eid)
-                    if history_key not in self._history_requested:
-                        self._history_requested.add(history_key)
-                        self._hass.async_create_task(
-                            self._request_entity_history(instance_id, remote_eid)
                         )
 
                     _LOGGER.debug(
