@@ -140,7 +140,11 @@ class HistoryProvider:
 
         metadata = None
         for _id, meta in metadata_result.items():
-            metadata = meta
+            # get_metadata returns {id: (statistic_id, meta_dict)} or {id: meta_dict}
+            if isinstance(meta, tuple):
+                metadata = meta[1] if len(meta) > 1 else meta[0]
+            else:
+                metadata = meta
             break
 
         if metadata is None:
@@ -148,15 +152,20 @@ class HistoryProvider:
             await self._send_done(requesting_id, entity_id, 0)
             return
 
-        # Serialize metadata
+        # Serialize metadata - handle both dict and object access patterns
+        def _get(obj, key, default=None):
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            return getattr(obj, key, default)
+
         meta_dict = {
-            "statistic_id": metadata["statistic_id"],
-            "source": metadata["source"],
-            "name": metadata.get("name"),
-            "unit_of_measurement": metadata.get("unit_of_measurement"),
-            "has_sum": metadata.get("has_sum", False),
-            "mean_type": metadata.get("mean_type", 0),
-            "unit_class": metadata.get("unit_class"),
+            "statistic_id": _get(metadata, "statistic_id", entity_id),
+            "source": _get(metadata, "source", "recorder"),
+            "name": _get(metadata, "name"),
+            "unit_of_measurement": _get(metadata, "unit_of_measurement"),
+            "has_sum": _get(metadata, "has_sum", False),
+            "mean_type": _get(metadata, "mean_type", 0),
+            "unit_class": _get(metadata, "unit_class"),
         }
 
         # Chunk and send

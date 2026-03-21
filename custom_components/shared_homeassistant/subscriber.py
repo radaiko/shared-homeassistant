@@ -182,7 +182,7 @@ class Subscriber:
         for entity_data in data.get("entities", []):
             domain = entity_data.get("domain")
             if domain not in PLATFORMS:
-                _LOGGER.warning(
+                _LOGGER.debug(
                     "Unsupported domain %s for entity %s, skipping",
                     domain,
                     entity_data.get("entity_id"),
