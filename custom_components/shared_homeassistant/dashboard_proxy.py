@@ -406,22 +406,37 @@ def _rewrite_html_proxy(body: bytes, instance_id: str, original_path: str) -> by
             return origXHROpen.apply(this, [method, url].concat(Array.prototype.slice.call(arguments, 2)));
         }};
 
-        // Override history to add proxy prefix for URL bar
+        // Set the clean dashboard path and lock it during HA init.
+        // HA's router calls replaceState with /lovelace/0 on startup,
+        // which overwrites our target path. We block that for 5 seconds.
         var origPush = history.pushState;
         var origReplace = history.replaceState;
-        history.pushState = function(state, title, url) {{
-            if (url && typeof url === 'string' && url.startsWith('/') && !url.startsWith(P)) {{
-                url = P + url;
-            }}
-            return origPush.call(this, state, title, url);
-        }};
-        history.replaceState = function(state, title, url) {{
-            if (url && typeof url === 'string' && url.startsWith('/') && !url.startsWith(P)) {{
-                url = P + url;
-            }}
-            return origReplace.call(this, state, title, url);
-        }};
+        var targetDashPath = "";
+        var dashLoaded = false;
 
+        var targetPath = location.pathname;
+        if (targetPath.startsWith(P)) {{
+            targetDashPath = targetPath.substring(P.length) || "/";
+            // Set initial clean path for HA router
+            origReplace.call(history, null, "", targetDashPath + location.search);
+
+            // Lock: force target path during initialization
+            history.replaceState = function(state, title, url) {{
+                if (!dashLoaded) {{
+                    return origReplace.call(this, state, title, targetDashPath + location.search);
+                }}
+                return origReplace.call(this, state, title, url);
+            }};
+            history.pushState = function(state, title, url) {{
+                if (!dashLoaded) {{
+                    return origPush.call(this, state, title, targetDashPath + location.search);
+                }}
+                return origPush.call(this, state, title, url);
+            }};
+
+            // Unlock after 5 seconds
+            setTimeout(function() {{ dashLoaded = true; }}, 5000);
+        }}
     }})();
     </script>""".encode()
 
