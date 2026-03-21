@@ -359,7 +359,7 @@ def _build_response_headers(resp: aiohttp.ClientResponse) -> dict[str, str]:
     }
 
 
-def _rewrite_html(body: bytes, instance_id: str, original_path: str) -> bytes:
+def _unused_rewrite_html(body: bytes, instance_id: str, original_path: str) -> bytes:
     """Rewrite absolute paths in HTML to go through the proxy."""
     prefix = f"{PROXY_PATH}/{instance_id}".encode()
     proxy_prefix = f"{PROXY_PATH}/{instance_id}"
@@ -474,7 +474,7 @@ def _rewrite_html(body: bytes, instance_id: str, original_path: str) -> bytes:
     return body
 
 
-def _rewrite_js(body: bytes, instance_id: str) -> bytes:
+def _unused_rewrite_js(body: bytes, instance_id: str) -> bytes:
     """Rewrite absolute paths in JS to go through the proxy."""
     prefix = f"{PROXY_PATH}/{instance_id}".encode()
     return _URL_IN_SCRIPT_RE.sub(lambda m: m.group(1) + prefix + m.group(2), body)
@@ -494,7 +494,7 @@ class DashboardProxyHTTPView(HomeAssistantView):
     async def _handle(
         self, request: web.Request, instance_id: str, path: str
     ) -> web.StreamResponse:
-        """Proxy an HTTP request to the remote instance."""
+        """Handle proxy requests."""
         info = self._proxy.get_remote_info(instance_id)
         if not info:
             return web.Response(status=404, text="Unknown instance")
@@ -503,6 +503,155 @@ class DashboardProxyHTTPView(HomeAssistantView):
         token = info["token"]
         session = info["session"]
 
+        # For the initial dashboard page (HTML), serve a wrapper with signed URL
+        if path.startswith("lovelace/") or path in ("lovelace", ""):
+            return await self._serve_dashboard_wrapper(
+                request, instance_id, remote_url, token, session, path
+            )
+
+        # For the sign-url API endpoint
+        if path == "_sign_url":
+            return await self._handle_sign_url(
+                request, instance_id, remote_url, token, session
+            )
+
+        # For all other requests, proxy directly
+        return await self._proxy_request(
+            request, instance_id, remote_url, token, session, path
+        )
+
+    async def _serve_dashboard_wrapper(
+        self,
+        request: web.Request,
+        instance_id: str,
+        remote_url: str,
+        token: str,
+        session: aiohttp.ClientSession,
+        path: str,
+    ) -> web.Response:
+        """Serve a wrapper page that iframes the remote dashboard with a signed URL."""
+        dashboard_path = f"/{path}"
+        if request.query_string:
+            dashboard_path += f"?{request.query_string}"
+
+        # Get a signed URL from the remote
+        signed_path = await self._get_signed_url(
+            remote_url, token, session, dashboard_path
+        )
+        if not signed_path:
+            return web.Response(
+                status=502, text="Failed to get signed URL from remote instance"
+            )
+
+        sign_api = f"{PROXY_PATH}/{instance_id}/_sign_url"
+        full_signed_url = f"{remote_url}{signed_path}"
+
+        wrapper_html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Shared Dashboard</title>
+    <style>
+        html, body {{ margin: 0; padding: 0; height: 100%; overflow: hidden; }}
+        iframe {{ width: 100%; height: 100%; border: none; }}
+    </style>
+</head>
+<body>
+    <iframe id="dashboard" src="{full_signed_url}" allow="fullscreen"></iframe>
+    <script>
+        // Refresh signed URL every 4 minutes (expires in 5)
+        setInterval(async function() {{
+            try {{
+                var resp = await fetch("{sign_api}?path={dashboard_path}");
+                var data = await resp.json();
+                if (data.signed_url) {{
+                    document.getElementById("dashboard").src = data.signed_url;
+                }}
+            }} catch(e) {{
+                console.warn("Failed to refresh signed URL:", e);
+            }}
+        }}, 240000);
+    </script>
+</body>
+</html>"""
+
+        return web.Response(
+            status=200, text=wrapper_html, content_type="text/html"
+        )
+
+    async def _handle_sign_url(
+        self,
+        request: web.Request,
+        instance_id: str,
+        remote_url: str,
+        token: str,
+        session: aiohttp.ClientSession,
+    ) -> web.Response:
+        """Return a fresh signed URL for the dashboard."""
+        dashboard_path = request.query.get("path", "/lovelace")
+        signed_path = await self._get_signed_url(
+            remote_url, token, session, dashboard_path
+        )
+        if signed_path:
+            return web.json_response(
+                {"signed_url": f"{remote_url}{signed_path}"}
+            )
+        return web.json_response({"error": "Failed to sign URL"}, status=502)
+
+    async def _get_signed_url(
+        self,
+        remote_url: str,
+        token: str,
+        session: aiohttp.ClientSession,
+        path: str,
+    ) -> str | None:
+        """Get a signed URL from the remote HA instance via WebSocket."""
+        ws_url = remote_url.replace("https://", "wss://").replace(
+            "http://", "ws://"
+        ) + "/api/websocket"
+
+        try:
+            remote_ws = await session.ws_connect(ws_url, heartbeat=30)
+
+            # Auth handshake
+            auth_msg = await remote_ws.receive_json()
+            if auth_msg.get("type") == "auth_required":
+                await remote_ws.send_json(
+                    {"type": "auth", "access_token": token}
+                )
+                auth_result = await remote_ws.receive_json()
+                if auth_result.get("type") != "auth_ok":
+                    await remote_ws.close()
+                    return None
+
+            # Request signed path
+            await remote_ws.send_json({
+                "id": 1,
+                "type": "auth/sign_path",
+                "path": path,
+                "expires": 300,
+            })
+            result = await remote_ws.receive_json()
+            await remote_ws.close()
+
+            if result.get("success"):
+                return result["result"]["path"]
+            return None
+        except Exception:
+            _LOGGER.warning("Failed to get signed URL from %s", remote_url)
+            return None
+
+    async def _proxy_request(
+        self,
+        request: web.Request,
+        instance_id: str,
+        remote_url: str,
+        token: str,
+        session: aiohttp.ClientSession,
+        path: str,
+    ) -> web.StreamResponse:
+        """Proxy an HTTP request to the remote instance."""
         target_url = f"{remote_url}/{path}"
         if request.query_string:
             target_url += f"?{request.query_string}"
@@ -522,13 +671,10 @@ class DashboardProxyHTTPView(HomeAssistantView):
                 allow_redirects=False,
             ) as resp:
                 resp_headers = _build_response_headers(resp)
-                content_type = resp.headers.get("Content-Type", "")
 
-                # Handle 304 Not Modified (no body)
                 if resp.status == 304:
                     return web.Response(status=304, headers=resp_headers)
 
-                # Handle redirects — rewrite Location header
                 if resp.status in (301, 302, 303, 307, 308):
                     location = resp.headers.get("Location", "")
                     if location.startswith("/"):
@@ -537,31 +683,7 @@ class DashboardProxyHTTPView(HomeAssistantView):
                         )
                     return web.Response(status=resp.status, headers=resp_headers)
 
-                # For HTML responses, read and rewrite
-                if "text/html" in content_type:
-                    raw = await resp.read()
-                    if len(raw) <= _MAX_REWRITE_SIZE:
-                        raw = _rewrite_html(raw, instance_id, path)
-                    return web.Response(
-                        status=resp.status,
-                        headers=resp_headers,
-                        body=raw,
-                        content_type="text/html",
-                    )
-
-                # For JS responses, rewrite absolute paths
-                if "javascript" in content_type:
-                    raw = await resp.read()
-                    if len(raw) <= _MAX_REWRITE_SIZE:
-                        raw = _rewrite_js(raw, instance_id)
-                    return web.Response(
-                        status=resp.status,
-                        headers=resp_headers,
-                        body=raw,
-                        content_type=content_type,
-                    )
-
-                # Stream all other responses
+                # Stream the response
                 response = web.StreamResponse(
                     status=resp.status, headers=resp_headers
                 )
