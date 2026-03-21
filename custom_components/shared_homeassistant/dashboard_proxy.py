@@ -93,6 +93,7 @@ class DashboardProxy:
         self._mqtt = mqtt_client
         self._instance_id = instance_id
         self._instance_url: str = config.get(CONF_INSTANCE_URL, "")
+        self._instance_name: str = config.get("instance_name", "")
         self._share_dashboards: bool = config.get(CONF_SHARE_DASHBOARDS, False)
         self._shared_dashboard_list: list[str] = config.get(
             CONF_SHARED_DASHBOARD_LIST, []
@@ -160,6 +161,7 @@ class DashboardProxy:
 
         payload = {
             "instance_id": self._instance_id,
+            "instance_name": self._instance_name,
             "url": self._instance_url,
             "token": token or "",
             "dashboards": dashboards,
@@ -260,6 +262,7 @@ class DashboardProxy:
         self._remote_instances[instance_id] = {
             "url": data.get("url", ""),
             "token": data.get("token", ""),
+            "instance_name": data.get("instance_name", ""),
             "dashboards": data.get("dashboards", []),
         }
 
@@ -279,22 +282,29 @@ class DashboardProxy:
         if not info:
             return
 
+        instance_name = info.get("instance_name", instance_id[:8])
+
         for dashboard in info.get("dashboards", []):
             url_path = dashboard.get("url_path", "")
             title = dashboard.get("title", url_path)
             icon = dashboard.get("icon", "mdi:view-dashboard")
 
+            # Use instance name as sidebar title for clarity
+            # e.g. "Haus" instead of "Overview", or "Haus Energy Flow"
+            if len(info.get("dashboards", [])) == 1:
+                sidebar_title = instance_name.title() if instance_name else title
+            else:
+                sidebar_title = f"{instance_name.title()} {title}" if instance_name else title
+
             panel_url_path = f"shared-{instance_id[:8]}-{url_path}"
 
-            # Use proxy path — solves mixed content (HTTPS→HTTP) and auth
             # Each HA dashboard has its own panel URL (e.g. /energy-flow)
-            # NOT /lovelace/energy-flow (that's a view within the default dashboard)
             dashboard_url = f"{PROXY_PATH}/{instance_id}/{url_path}?kiosk"
 
             frontend.async_register_built_in_panel(
                 self._hass,
                 component_name="iframe",
-                sidebar_title=title,
+                sidebar_title=sidebar_title,
                 sidebar_icon=icon,
                 frontend_url_path=panel_url_path,
                 config={"url": dashboard_url},
