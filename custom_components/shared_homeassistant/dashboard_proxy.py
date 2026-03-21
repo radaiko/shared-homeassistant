@@ -167,11 +167,13 @@ class DashboardProxy:
                 _LOGGER.error("No admin user found, cannot generate dashboard token")
                 return
 
+            from datetime import timedelta
+
             refresh_token = await self._hass.auth.async_create_refresh_token(
                 user,
                 client_name=f"Shared HA Dashboard ({self._instance_id[:8]})",
                 token_type="long_lived_access_token",
-                access_token_expiration=365 * 24 * 3600,
+                access_token_expiration=timedelta(days=365),
             )
             self._auth_token = self._hass.auth.async_create_access_token(
                 refresh_token
