@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -197,8 +198,12 @@ class Subscriber:
                 history_key = (instance_id, remote_eid)
                 if history_key not in self._history_requested:
                     self._history_requested.add(history_key)
+                    # Stagger requests to avoid overwhelming MQTT
+                    delay = len(self._history_requested) * 0.5
                     self._hass.async_create_task(
-                        self._request_entity_history(instance_id, remote_eid)
+                        self._request_entity_history(
+                            instance_id, remote_eid, delay
+                        )
                     )
 
             if unique_id in self._created_entities:
@@ -358,14 +363,18 @@ class Subscriber:
             )
 
     async def _request_entity_history(
-        self, source_instance_id: str, entity_id: str
+        self, source_instance_id: str, entity_id: str, delay: float = 2.0
     ) -> None:
         """Request history for a shared entity via the history consumer."""
+        await asyncio.sleep(max(delay, 2.0))
         try:
             history_consumer = self._config_entry.runtime_data.history_consumer
+            _LOGGER.info("Requesting history for %s", entity_id)
             await history_consumer.async_request_history(source_instance_id, entity_id)
         except Exception:
-            _LOGGER.debug(
-                "Could not request history for %s (history consumer not ready)",
+            _LOGGER.warning(
+                "Failed to request history for %s from %s",
                 entity_id,
+                source_instance_id[:8],
+                exc_info=True,
             )
