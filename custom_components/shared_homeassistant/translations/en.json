@@ -1,0 +1,49 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "MQTT Broker Configuration",
+        "description": "Configure the shared MQTT broker that all instances will connect to.",
+        "data": {
+          "broker_host": "Broker Host",
+          "broker_port": "Broker Port",
+          "broker_username": "Username",
+          "broker_password": "Password",
+          "use_tls": "Use TLS"
+        }
+      },
+      "instance": {
+        "title": "Instance Identification",
+        "description": "Give this Home Assistant instance a name that will be shown on other instances. The Instance ID is auto-generated and used internally.",
+        "data": {
+          "instance_name": "Instance Name",
+          "instance_id": "Instance ID"
+        }
+      },
+      "selection": {
+        "title": "Share Devices & Entities",
+        "description": "Select which devices and entities to share with other instances.",
+        "data": {
+          "selected_devices": "Devices to share",
+          "selected_entities": "Additional entities to share"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "This integration is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Shared Home Assistant Options",
+        "description": "Update which devices and entities are shared, and configure the prefix for received entities.",
+        "data": {
+          "selected_devices": "Devices to share",
+          "selected_entities": "Additional entities to share",
+          "entity_prefix": "Prefix for received entities (e.g. 'house')"
+        }
+      }
+    }
+  }
+}
