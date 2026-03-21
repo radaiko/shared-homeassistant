@@ -243,12 +243,13 @@ class SharedHAOptionsFlow(OptionsFlow):
         """Step 2: Dashboard sharing options."""
         if user_input is not None:
             self._data.update(user_input)
-            # Save all data
+            # Save all data to config entry
             new_data = {**self.config_entry.data, **self._data}
             self.hass.config_entries.async_update_entry(
                 self.config_entry, data=new_data
             )
-            return self.async_create_entry(title="", data={})
+            # Return options with all data so the update listener fires
+            return self.async_create_entry(title="", data=self._data)
 
         current = self.config_entry.data
 
