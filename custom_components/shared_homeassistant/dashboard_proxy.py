@@ -243,6 +243,10 @@ class DashboardProxy:
         if not info:
             return
 
+        remote_url = info.get("url", "").rstrip("/")
+        if not remote_url:
+            return
+
         for dashboard in info.get("dashboards", []):
             url_path = dashboard.get("url_path", "")
             title = dashboard.get("title", url_path)
@@ -250,15 +254,16 @@ class DashboardProxy:
 
             panel_url_path = f"shared-{instance_id[:8]}-{url_path}"
 
+            # Point directly to the remote HA instance's dashboard
+            dashboard_url = f"{remote_url}/lovelace/{url_path}?kiosk"
+
             frontend.async_register_built_in_panel(
                 self._hass,
                 component_name="iframe",
                 sidebar_title=title,
                 sidebar_icon=icon,
                 frontend_url_path=panel_url_path,
-                config={
-                    "url": f"{PROXY_PATH}/{instance_id}/lovelace/{url_path}?kiosk"
-                },
+                config={"url": dashboard_url},
                 require_admin=False,
                 update=True,
             )
