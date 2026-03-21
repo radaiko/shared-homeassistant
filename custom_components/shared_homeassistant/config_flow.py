@@ -36,6 +36,8 @@ from .const import (
     CONF_READONLY_DEVICES,
     CONF_READONLY_ENTITIES,
     CONF_ENTITY_PREFIX,
+    CONF_SHARE_DASHBOARDS,
+    CONF_INSTANCE_URL,
     DEFAULT_PORT,
     DEFAULT_ENTITY_PREFIX,
     PLATFORMS,
@@ -224,6 +226,14 @@ class SharedHAOptionsFlow(OptionsFlow):
                     CONF_ENTITY_PREFIX,
                     default=current.get(CONF_ENTITY_PREFIX, DEFAULT_ENTITY_PREFIX),
                 ): TextSelector(TextSelectorConfig(type="text")),
+                vol.Optional(
+                    CONF_SHARE_DASHBOARDS,
+                    default=current.get(CONF_SHARE_DASHBOARDS, False),
+                ): BooleanSelector(),
+                vol.Optional(
+                    CONF_INSTANCE_URL,
+                    default=current.get(CONF_INSTANCE_URL, ""),
+                ): TextSelector(TextSelectorConfig(type="url")),
             }
         )
 

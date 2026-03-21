@@ -24,6 +24,7 @@ from .const import (
     PLATFORMS,
     SharedHARuntimeData,
 )
+from .dashboard_proxy import DashboardProxy
 from .history_sync import HistoryConsumer, HistoryProvider
 from .mqtt_client import MQTTClient
 from .publisher import Publisher
@@ -50,11 +51,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: SharedHAConfigEntry) -> 
         use_tls=data.get(CONF_USE_TLS, False),
     )
 
-    # Create publisher, subscriber, and history sync
+    # Create all components
     publisher = Publisher(hass, mqtt_client, data)
     subscriber = Subscriber(hass, mqtt_client, entry)
     history_provider = HistoryProvider(hass, mqtt_client, instance_id)
     history_consumer = HistoryConsumer(hass, mqtt_client, instance_id)
+    dashboard_proxy = DashboardProxy(hass, mqtt_client, instance_id, data)
 
     # Store in runtime_data
     entry.runtime_data = SharedHARuntimeData(
@@ -63,6 +65,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: SharedHAConfigEntry) -> 
         subscriber=subscriber,
         history_provider=history_provider,
         history_consumer=history_consumer,
+        dashboard_proxy=dashboard_proxy,
     )
 
     # Connect to MQTT
@@ -72,19 +75,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: SharedHAConfigEntry) -> 
         _LOGGER.exception("Failed to connect to MQTT broker %s", data[CONF_BROKER_HOST])
         _LOGGER.warning("Will retry MQTT connection in background")
 
-    # Set up platforms (this triggers async_setup_entry in each platform file)
+    # Set up platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     # Start all components after platforms are loaded
     if mqtt_client.connected:
-        await _start_components(publisher, subscriber, history_provider, history_consumer)
+        await _start_components(
+            publisher, subscriber, history_provider, history_consumer, dashboard_proxy
+        )
     else:
         async def _start_when_connected():
             """Start components once MQTT connects."""
             try:
                 await asyncio.wait_for(mqtt_client._connected.wait(), timeout=60)
                 await _start_components(
-                    publisher, subscriber, history_provider, history_consumer
+                    publisher, subscriber, history_provider, history_consumer,
+                    dashboard_proxy,
                 )
             except asyncio.TimeoutError:
                 _LOGGER.warning("Timed out waiting for MQTT connection, will retry")
@@ -102,12 +108,14 @@ async def _start_components(
     subscriber: Subscriber,
     history_provider: HistoryProvider,
     history_consumer: HistoryConsumer,
+    dashboard_proxy: DashboardProxy,
 ) -> None:
-    """Start publisher, subscriber, and history sync."""
+    """Start publisher, subscriber, history sync, and dashboard proxy."""
     await publisher.async_start()
     await subscriber.async_start()
     await history_provider.async_start()
     await history_consumer.async_start()
+    await dashboard_proxy.async_start()
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: SharedHAConfigEntry) -> bool:
@@ -120,6 +128,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: SharedHAConfigEntry) ->
         await rt.subscriber.async_stop()
         await rt.history_provider.async_stop()
         await rt.history_consumer.async_stop()
+        await rt.dashboard_proxy.async_stop()
         await rt.mqtt_client.async_disconnect()
 
     return unload_ok

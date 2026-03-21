@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from .dashboard_proxy import DashboardProxy
     from .history_sync import HistoryConsumer, HistoryProvider
     from .mqtt_client import MQTTClient
     from .publisher import Publisher
@@ -24,6 +25,10 @@ TOPIC_HEARTBEAT = f"{TOPIC_PREFIX}/{{instance_id}}/heartbeat"
 TOPIC_HISTORY_REQUEST = f"{TOPIC_PREFIX}/{{instance_id}}/history_request/{{entity_id}}"
 TOPIC_HISTORY_CHUNK = f"{TOPIC_PREFIX}/{{instance_id}}/history_response/{{requesting_id}}/{{entity_id}}/{{chunk_idx}}"
 TOPIC_HISTORY_DONE = f"{TOPIC_PREFIX}/{{instance_id}}/history_response/{{requesting_id}}/{{entity_id}}/done"
+
+# Dashboard sharing topics
+TOPIC_DASHBOARD_INFO = f"{TOPIC_PREFIX}/{{instance_id}}/dashboards"
+TOPIC_SUB_DASHBOARD_INFO = f"{TOPIC_PREFIX}/+/dashboards"
 
 # Subscription wildcards
 TOPIC_SUB_DEVICES = f"{TOPIC_PREFIX}/+/devices/#"
@@ -45,6 +50,9 @@ CONF_SELECTED_ENTITIES = "selected_entities"
 CONF_READONLY_DEVICES = "readonly_devices"
 CONF_READONLY_ENTITIES = "readonly_entities"
 CONF_ENTITY_PREFIX = "entity_prefix"
+CONF_SHARE_DASHBOARDS = "share_dashboards"
+CONF_SHARED_DASHBOARD_LIST = "shared_dashboard_list"
+CONF_INSTANCE_URL = "instance_url"
 
 # Defaults
 DEFAULT_PORT = 1883
@@ -71,3 +79,4 @@ class SharedHARuntimeData:
     subscriber: Subscriber
     history_provider: HistoryProvider
     history_consumer: HistoryConsumer
+    dashboard_proxy: DashboardProxy
