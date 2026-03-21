@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from typing import Any
 
 import aiohttp
@@ -26,7 +27,6 @@ from .const import (
     TOPIC_PREFIX,
     TOPIC_DASHBOARD_INFO,
     TOPIC_SUB_DASHBOARD_INFO,
-    CONF_INSTANCE_ID,
     CONF_INSTANCE_URL,
     CONF_SHARE_DASHBOARDS,
     CONF_SHARED_DASHBOARD_LIST,
@@ -37,6 +37,45 @@ _LOGGER = logging.getLogger(__name__)
 
 # Proxy base path
 PROXY_PATH = "/api/shared_ha/proxy"
+_VIEW_KEY = f"{DOMAIN}_proxy_views_registered"
+
+# Headers to strip from proxied requests/responses
+_HOP_BY_HOP = frozenset({
+    "connection", "keep-alive", "proxy-authenticate",
+    "proxy-authorization", "te", "trailers",
+    "transfer-encoding", "upgrade",
+})
+_STRIP_REQUEST = _HOP_BY_HOP | {"host", "content-length", "authorization"}
+_STRIP_RESPONSE = _HOP_BY_HOP | {
+    "content-encoding", "content-length",
+    "x-frame-options", "content-security-policy",
+}
+
+# Known HA frontend absolute paths that need rewriting
+_HA_PATHS = (
+    "frontend_latest", "static", "hacsfiles", "local",
+    "api", "auth", "lovelace", "config", "logbook",
+    "history", "map", "developer-tools", "profile",
+)
+_HA_PATHS_PATTERN = "|".join(_HA_PATHS)
+
+# Regex for absolute-path HTML attributes
+_ABS_ATTR_RE = re.compile(
+    rb'((?:src|href|action|data-src)=["\'])'
+    rb'(/(?:' + _HA_PATHS_PATTERN.encode() + rb')[^"\']*)',
+    re.IGNORECASE,
+)
+
+# Regex for absolute paths inside inline <script> strings
+_URL_IN_SCRIPT_RE = re.compile(
+    rb"""(["'])(/(?:""" + _HA_PATHS_PATTERN.encode() + rb""")[^"']*)""",
+)
+
+# Regex to find <head> tag for base injection
+_HEAD_TAG_RE = re.compile(rb"(<head[^>]*>)", re.IGNORECASE)
+
+# Max body size to read into memory for rewriting (10 MB)
+_MAX_REWRITE_SIZE = 10 * 1024 * 1024
 
 
 class DashboardProxy:
@@ -59,10 +98,9 @@ class DashboardProxy:
             CONF_SHARED_DASHBOARD_LIST, []
         )
 
-        # Remote instance data: {instance_id: {url, token, name, dashboards}}
+        # Remote instance data: {instance_id: {url, token, session, dashboards}}
         self._remote_instances: dict[str, dict[str, Any]] = {}
         self._auth_token: str | None = None
-        self._views_registered = False
 
     async def async_start(self) -> None:
         """Start dashboard proxy services."""
@@ -75,11 +113,12 @@ class DashboardProxy:
         if self._share_dashboards and self._instance_url:
             await self._generate_and_publish_token()
 
-        # Register proxy HTTP views
-        if not self._views_registered:
-            self._hass.http.register_view(DashboardProxyHTTPView(self))
+        # Register proxy HTTP views (only once per HA lifetime)
+        if not self._hass.data.get(_VIEW_KEY):
+            # Register WS view first (more specific path)
             self._hass.http.register_view(DashboardProxyWSView(self))
-            self._views_registered = True
+            self._hass.http.register_view(DashboardProxyHTTPView(self))
+            self._hass.data[_VIEW_KEY] = True
 
     async def async_stop(self) -> None:
         """Stop dashboard proxy services."""
@@ -90,13 +129,17 @@ class DashboardProxy:
             topic = TOPIC_DASHBOARD_INFO.format(instance_id=self._instance_id)
             await self._mqtt.async_publish(topic, "", retain=True)
 
+        # Close all client sessions
+        for info in self._remote_instances.values():
+            session = info.get("session")
+            if session and not session.closed:
+                await session.close()
+
     async def _generate_and_publish_token(self) -> None:
         """Generate a long-lived token and publish dashboard info via MQTT."""
-        # Generate a token using HA's auth system
         try:
             user = await self._hass.auth.async_get_owner()
             if user is None:
-                # Fall back to first admin user
                 for u in await self._hass.auth.async_get_users():
                     if u.is_owner or u.is_admin:
                         user = u
@@ -106,12 +149,11 @@ class DashboardProxy:
                 _LOGGER.error("No admin user found, cannot generate dashboard token")
                 return
 
-            # Create a refresh token for this integration
             refresh_token = await self._hass.auth.async_create_refresh_token(
                 user,
                 client_name=f"Shared HA Dashboard ({self._instance_id[:8]})",
                 token_type="long_lived_access_token",
-                access_token_expiration=365 * 24 * 3600,  # 1 year
+                access_token_expiration=365 * 24 * 3600,
             )
             self._auth_token = self._hass.auth.async_create_access_token(
                 refresh_token
@@ -120,10 +162,8 @@ class DashboardProxy:
             _LOGGER.exception("Failed to generate dashboard access token")
             return
 
-        # Get list of available dashboards
         dashboards = await self._get_dashboard_list()
 
-        # Publish dashboard info with token
         payload = {
             "instance_id": self._instance_id,
             "url": self._instance_url,
@@ -149,7 +189,6 @@ class DashboardProxy:
             result = []
             for url_path, dashboard in lovelace_data.dashboards.items():
                 if url_path is None:
-                    # Default dashboard
                     if not self._shared_dashboard_list or "lovelace" in self._shared_dashboard_list:
                         result.append({
                             "url_path": "lovelace",
@@ -158,7 +197,6 @@ class DashboardProxy:
                         })
                 else:
                     if not self._shared_dashboard_list or url_path in self._shared_dashboard_list:
-                        # Get dashboard metadata
                         title = url_path
                         icon = "mdi:view-dashboard"
                         if hasattr(dashboard, "config") and isinstance(
@@ -189,9 +227,10 @@ class DashboardProxy:
             return
 
         if not payload:
-            # Instance removed dashboard sharing
-            self._remote_instances.pop(instance_id, None)
             self._remove_panels(instance_id)
+            old = self._remote_instances.pop(instance_id, None)
+            if old and old.get("session") and not old["session"].closed:
+                await old["session"].close()
             return
 
         try:
@@ -199,10 +238,21 @@ class DashboardProxy:
         except (json.JSONDecodeError, UnicodeDecodeError):
             return
 
+        # Create a persistent client session for this remote instance
+        old = self._remote_instances.get(instance_id)
+        if old and old.get("session") and not old["session"].closed:
+            session = old["session"]
+        else:
+            session = aiohttp.ClientSession(
+                connector=aiohttp.TCPConnector(ssl=False),
+                timeout=aiohttp.ClientTimeout(total=60, connect=10),
+            )
+
         self._remote_instances[instance_id] = {
             "url": data.get("url", ""),
             "token": data.get("token", ""),
             "dashboards": data.get("dashboards", []),
+            "session": session,
         }
 
         _LOGGER.info(
@@ -211,7 +261,6 @@ class DashboardProxy:
             instance_id[:8],
         )
 
-        # Register sidebar panels for discovered dashboards
         await self._register_panels(instance_id)
 
     async def _register_panels(self, instance_id: str) -> None:
@@ -269,6 +318,47 @@ class DashboardProxy:
         return self._remote_instances.get(instance_id)
 
 
+def _build_request_headers(request: web.Request, token: str) -> dict[str, str]:
+    """Build headers for the proxied request."""
+    headers = {
+        k: v for k, v in request.headers.items()
+        if k.lower() not in _STRIP_REQUEST
+    }
+    headers["Authorization"] = f"Bearer {token}"
+    if request.remote:
+        headers["X-Forwarded-For"] = request.remote
+    headers["X-Forwarded-Proto"] = request.scheme
+    return headers
+
+
+def _build_response_headers(resp: aiohttp.ClientResponse) -> dict[str, str]:
+    """Build headers for the response back to the client."""
+    return {
+        k: v for k, v in resp.headers.items()
+        if k.lower() not in _STRIP_RESPONSE
+    }
+
+
+def _rewrite_html(body: bytes, instance_id: str) -> bytes:
+    """Rewrite absolute paths in HTML to go through the proxy."""
+    prefix = f"{PROXY_PATH}/{instance_id}".encode()
+
+    # Inject <base href> after <head> tag
+    base_tag = f'<base href="{PROXY_PATH}/{instance_id}/">'.encode()
+    body = _HEAD_TAG_RE.sub(lambda m: m.group(0) + base_tag, body, count=1)
+
+    # Rewrite absolute-path HTML attributes
+    body = _ABS_ATTR_RE.sub(lambda m: m.group(1) + prefix + m.group(2), body)
+
+    return body
+
+
+def _rewrite_js(body: bytes, instance_id: str) -> bytes:
+    """Rewrite absolute paths in JS to go through the proxy."""
+    prefix = f"{PROXY_PATH}/{instance_id}".encode()
+    return _URL_IN_SCRIPT_RE.sub(lambda m: m.group(1) + prefix + m.group(2), body)
+
+
 class DashboardProxyHTTPView(HomeAssistantView):
     """Proxy HTTP requests to a remote HA instance."""
 
@@ -280,20 +370,8 @@ class DashboardProxyHTTPView(HomeAssistantView):
         """Initialize the proxy view."""
         self._proxy = proxy
 
-    async def get(self, request: web.Request, instance_id: str, path: str) -> web.StreamResponse:
-        """Proxy GET requests."""
-        return await self._proxy_request(request, instance_id, path, "GET")
-
-    async def post(self, request: web.Request, instance_id: str, path: str) -> web.StreamResponse:
-        """Proxy POST requests."""
-        return await self._proxy_request(request, instance_id, path, "POST")
-
-    async def _proxy_request(
-        self,
-        request: web.Request,
-        instance_id: str,
-        path: str,
-        method: str,
+    async def _handle(
+        self, request: web.Request, instance_id: str, path: str
     ) -> web.StreamResponse:
         """Proxy an HTTP request to the remote instance."""
         info = self._proxy.get_remote_info(instance_id)
@@ -302,62 +380,85 @@ class DashboardProxyHTTPView(HomeAssistantView):
 
         remote_url = info["url"].rstrip("/")
         token = info["token"]
+        session = info["session"]
 
-        # Build target URL
         target_url = f"{remote_url}/{path}"
         if request.query_string:
             target_url += f"?{request.query_string}"
 
-        # Build headers — inject auth, forward relevant headers
-        headers = {
-            "Authorization": f"Bearer {token}",
-        }
-        for header in ("Accept", "Content-Type", "Accept-Encoding"):
-            if header in request.headers:
-                headers[header] = request.headers[header]
+        req_headers = _build_request_headers(request, token)
 
-        # Read request body if POST
         body = None
-        if method == "POST":
+        if request.method in ("POST", "PUT", "PATCH"):
             body = await request.read()
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.request(
-                    method,
-                    target_url,
-                    headers=headers,
-                    data=body,
-                    ssl=False,  # Don't verify remote cert
-                    timeout=aiohttp.ClientTimeout(total=30),
-                ) as resp:
-                    # Stream the response back
-                    response = web.StreamResponse(
+            async with session.request(
+                method=request.method,
+                url=target_url,
+                headers=req_headers,
+                data=body,
+                allow_redirects=False,
+            ) as resp:
+                resp_headers = _build_response_headers(resp)
+                content_type = resp.headers.get("Content-Type", "")
+
+                # Handle 304 Not Modified (no body)
+                if resp.status == 304:
+                    return web.Response(status=304, headers=resp_headers)
+
+                # Handle redirects — rewrite Location header
+                if resp.status in (301, 302, 303, 307, 308):
+                    location = resp.headers.get("Location", "")
+                    if location.startswith("/"):
+                        resp_headers["Location"] = (
+                            f"{PROXY_PATH}/{instance_id}{location}"
+                        )
+                    return web.Response(status=resp.status, headers=resp_headers)
+
+                # For HTML responses, read and rewrite
+                if "text/html" in content_type:
+                    raw = await resp.read()
+                    if len(raw) <= _MAX_REWRITE_SIZE:
+                        raw = _rewrite_html(raw, instance_id)
+                    return web.Response(
                         status=resp.status,
-                        headers={
-                            k: v
-                            for k, v in resp.headers.items()
-                            if k.lower()
-                            not in (
-                                "transfer-encoding",
-                                "content-encoding",
-                                "content-length",
-                                "x-frame-options",
-                                "content-security-policy",
-                            )
-                        },
+                        headers=resp_headers,
+                        body=raw,
+                        content_type="text/html",
                     )
-                    response.content_type = resp.content_type or "application/octet-stream"
-                    await response.prepare(request)
 
-                    async for chunk in resp.content.iter_chunked(8192):
-                        await response.write(chunk)
+                # For JS responses, rewrite absolute paths
+                if "javascript" in content_type:
+                    raw = await resp.read()
+                    if len(raw) <= _MAX_REWRITE_SIZE:
+                        raw = _rewrite_js(raw, instance_id)
+                    return web.Response(
+                        status=resp.status,
+                        headers=resp_headers,
+                        body=raw,
+                        content_type=content_type,
+                    )
 
-                    await response.write_eof()
-                    return response
+                # Stream all other responses
+                response = web.StreamResponse(
+                    status=resp.status, headers=resp_headers
+                )
+                response.content_type = (
+                    resp.content_type or "application/octet-stream"
+                )
+                await response.prepare(request)
+                async for chunk in resp.content.iter_chunked(65536):
+                    await response.write(chunk)
+                await response.write_eof()
+                return response
+
         except aiohttp.ClientError as err:
             _LOGGER.warning("Proxy request failed for %s: %s", target_url, err)
             return web.Response(status=502, text=f"Proxy error: {err}")
+
+    # Wire all HTTP methods
+    get = post = put = delete = patch = options = _handle
 
 
 class DashboardProxyWSView(HomeAssistantView):
@@ -371,7 +472,9 @@ class DashboardProxyWSView(HomeAssistantView):
         """Initialize the WS proxy view."""
         self._proxy = proxy
 
-    async def get(self, request: web.Request, instance_id: str) -> web.WebSocketResponse:
+    async def get(
+        self, request: web.Request, instance_id: str
+    ) -> web.WebSocketResponse:
         """Handle WebSocket upgrade and proxy."""
         info = self._proxy.get_remote_info(instance_id)
         if not info:
@@ -379,6 +482,7 @@ class DashboardProxyWSView(HomeAssistantView):
 
         remote_url = info["url"].rstrip("/")
         token = info["token"]
+        session = info["session"]
 
         # Convert http(s) to ws(s)
         ws_url = remote_url.replace("https://", "wss://").replace(
@@ -386,60 +490,48 @@ class DashboardProxyWSView(HomeAssistantView):
         )
         ws_url += "/api/websocket"
 
-        # Accept the local WebSocket connection
-        local_ws = web.WebSocketResponse()
+        local_ws = web.WebSocketResponse(heartbeat=30)
         await local_ws.prepare(request)
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.ws_connect(
-                    ws_url, ssl=False, timeout=30
-                ) as remote_ws:
-                    # Handle the HA auth handshake with the remote
-                    # Remote sends auth_required, we respond with token
-                    auth_msg = await remote_ws.receive_json()
-                    if auth_msg.get("type") == "auth_required":
-                        await remote_ws.send_json(
-                            {"type": "auth", "access_token": token}
-                        )
-                        auth_result = await remote_ws.receive_json()
-                        if auth_result.get("type") != "auth_ok":
-                            await local_ws.close(
-                                code=4001, message=b"Remote auth failed"
-                            )
-                            return local_ws
+            remote_ws = await session.ws_connect(ws_url, heartbeat=30)
 
-                    # Forward the auth_required and auth_ok to local client
-                    # so the HA frontend initializes correctly
-                    await local_ws.send_json({"type": "auth_ok"})
+            # Handle HA auth handshake with the remote
+            auth_msg = await remote_ws.receive_json()
+            if auth_msg.get("type") == "auth_required":
+                await remote_ws.send_json(
+                    {"type": "auth", "access_token": token}
+                )
+                auth_result = await remote_ws.receive_json()
+                if auth_result.get("type") != "auth_ok":
+                    await local_ws.close(code=4001, message=b"Remote auth failed")
+                    return local_ws
 
-                    # Bidirectional proxy
-                    async def forward_local_to_remote():
-                        async for msg in local_ws:
-                            if msg.type == WSMsgType.TEXT:
-                                await remote_ws.send_str(msg.data)
-                            elif msg.type == WSMsgType.BINARY:
-                                await remote_ws.send_bytes(msg.data)
-                            elif msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
-                                break
+            # Send auth_ok to the local frontend
+            await local_ws.send_json({"type": "auth_ok"})
 
-                    async def forward_remote_to_local():
-                        async for msg in remote_ws:
-                            if msg.type == WSMsgType.TEXT:
-                                await local_ws.send_str(msg.data)
-                            elif msg.type == WSMsgType.BINARY:
-                                await local_ws.send_bytes(msg.data)
-                            elif msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
-                                break
+            # Bidirectional proxy
+            async def forward(src, dst):
+                async for msg in src:
+                    if msg.type == WSMsgType.TEXT:
+                        await dst.send_str(msg.data)
+                    elif msg.type == WSMsgType.BINARY:
+                        await dst.send_bytes(msg.data)
+                    elif msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
+                        break
 
-                    # Run both directions concurrently
-                    await asyncio.gather(
-                        forward_local_to_remote(),
-                        forward_remote_to_local(),
-                        return_exceptions=True,
-                    )
+            await asyncio.gather(
+                forward(local_ws, remote_ws),
+                forward(remote_ws, local_ws),
+                return_exceptions=True,
+            )
+
+            if not remote_ws.closed:
+                await remote_ws.close()
         except Exception:
-            _LOGGER.debug("WebSocket proxy closed for instance %s", instance_id[:8])
+            _LOGGER.debug(
+                "WebSocket proxy closed for instance %s", instance_id[:8]
+            )
         finally:
             if not local_ws.closed:
                 await local_ws.close()
