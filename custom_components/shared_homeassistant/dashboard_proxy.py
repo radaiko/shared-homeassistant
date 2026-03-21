@@ -289,12 +289,11 @@ class DashboardProxy:
             title = dashboard.get("title", url_path)
             icon = dashboard.get("icon", "mdi:view-dashboard")
 
-            # Use instance name as sidebar title for clarity
-            # e.g. "Haus" instead of "Overview", or "Haus Energy Flow"
-            if len(info.get("dashboards", [])) == 1:
-                sidebar_title = instance_name.title() if instance_name else title
+            # For the default dashboard, use instance name instead of "Overview"
+            if url_path == "lovelace" and instance_name:
+                sidebar_title = instance_name.title()
             else:
-                sidebar_title = f"{instance_name.title()} {title}" if instance_name else title
+                sidebar_title = title
 
             panel_url_path = f"shared-{instance_id[:8]}-{url_path}"
 
