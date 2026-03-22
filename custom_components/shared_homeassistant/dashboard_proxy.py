@@ -303,8 +303,13 @@ class DashboardProxy:
 
             panel_url_path = f"shared-{instance_id[:8]}-{url_path}"
 
-            # Each HA dashboard has its own panel URL (e.g. /energy-flow)
-            dashboard_url = f"{PROXY_PATH}/{instance_id}/{url_path}?kiosk"
+            # Point directly to the remote HA's dashboard URL
+            # This works when both instances use HTTPS (no mixed content)
+            remote_url = info.get("url", "").rstrip("/")
+            if url_path == "lovelace":
+                dashboard_url = f"{remote_url}/?kiosk"
+            else:
+                dashboard_url = f"{remote_url}/{url_path}?kiosk"
 
             frontend.async_register_built_in_panel(
                 self._hass,
