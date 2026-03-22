@@ -307,7 +307,7 @@ class DashboardProxy:
             # This works when both instances use HTTPS (no mixed content)
             remote_url = info.get("url", "").rstrip("/")
             if url_path == "lovelace":
-                dashboard_url = f"{remote_url}/?kiosk"
+                dashboard_url = f"{remote_url}/lovelace/0?kiosk"
             else:
                 dashboard_url = f"{remote_url}/{url_path}?kiosk"
 
