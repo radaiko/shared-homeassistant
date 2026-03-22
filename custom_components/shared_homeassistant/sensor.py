@@ -39,6 +39,14 @@ class SharedSensor(SharedBaseEntity, SensorEntity):
         if entity_data.get("unit_of_measurement"):
             self._attr_native_unit_of_measurement = entity_data["unit_of_measurement"]
 
+        # Copy state_class from source to preserve statistics behavior
+        attrs = entity_data.get("attributes", {})
+        if attrs.get("state_class"):
+            self._attr_state_class = attrs["state_class"]
+
+        # Set high display precision to avoid rounding
+        self._attr_suggested_display_precision = 1
+
     @property
     def native_value(self) -> str | float | datetime | None:
         """Return the sensor value."""
@@ -65,3 +73,5 @@ class SharedSensor(SharedBaseEntity, SensorEntity):
             self._attr_native_unit_of_measurement = attributes.get(
                 "unit_of_measurement"
             )
+        if "state_class" in attributes:
+            self._attr_state_class = attributes["state_class"]
