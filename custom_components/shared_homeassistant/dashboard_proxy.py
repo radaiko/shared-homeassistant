@@ -365,7 +365,7 @@ def _build_response_headers(resp: aiohttp.ClientResponse) -> dict[str, str]:
     }
 
 
-def _rewrite_html_proxy(body: bytes, instance_id: str, original_path: str) -> bytes:
+def _rewrite_html_proxy(body: bytes, instance_id: str, original_path: str, token: str = "") -> bytes:
     """Rewrite HTML for proxy: replace all absolute paths and inject overrides."""
     prefix = f"{PROXY_PATH}/{instance_id}".encode()
     proxy_prefix = f"{PROXY_PATH}/{instance_id}"
@@ -428,17 +428,18 @@ def _rewrite_html_proxy(body: bytes, instance_id: str, original_path: str) -> by
             }});
         }} catch(e) {{}}
 
-        // Pre-populate auth tokens so the HA frontend doesn't show login.
-        // The WS proxy handles real auth — this just prevents the login screen.
-        if (!proxyStorage.getItem("hassTokens")) {{
+        // Pre-populate auth tokens with the real token from the proxy.
+        // This prevents the HA frontend from showing the login screen.
+        var proxyToken = "{token}";
+        if (proxyToken) {{
             proxyStorage.setItem("hassTokens", JSON.stringify({{
-                "access_token": "proxy-managed",
+                "access_token": proxyToken,
                 "token_type": "Bearer",
-                "refresh_token": "proxy-managed",
-                "expires_in": 999999,
-                "hassUrl": location.origin,
+                "refresh_token": "",
+                "expires_in": 31536000,
+                "hassUrl": location.origin + P,
                 "clientId": location.origin + "/",
-                "expires": Date.now() + 999999999
+                "expires": Date.now() + 31536000000
             }}));
         }}
 
@@ -850,7 +851,7 @@ class DashboardProxyHTTPView(HomeAssistantView):
                 if "text/html" in content_type:
                     raw = await resp.read()
                     if len(raw) <= _MAX_REWRITE_SIZE:
-                        raw = _rewrite_html_proxy(raw, instance_id, path)
+                        raw = _rewrite_html_proxy(raw, instance_id, path, token)
                     return web.Response(
                         status=resp.status,
                         headers=resp_headers,
