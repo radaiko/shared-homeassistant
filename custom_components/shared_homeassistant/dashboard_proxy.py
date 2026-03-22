@@ -900,8 +900,14 @@ class DashboardProxyWSView(HomeAssistantView):
             return web.Response(status=404, text="Unknown instance")
 
         remote_url = info["url"].rstrip("/")
-        token = info["token"]
-        session = info["session"]
+        token = info.get("token", "")
+        session = info.get("session")
+        if not session or session.closed:
+            session = aiohttp.ClientSession(
+                connector=aiohttp.TCPConnector(ssl=False),
+                timeout=aiohttp.ClientTimeout(total=60, connect=10),
+            )
+            info["session"] = session
 
         # Convert http(s) to ws(s)
         ws_url = remote_url.replace("https://", "wss://").replace(
