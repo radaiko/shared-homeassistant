@@ -140,14 +140,20 @@ class Publisher:
             if device is None:
                 _LOGGER.warning("Selected device %s not found in registry", device_id)
                 continue
-            await self._publish_device(device, readonly=False)
+            try:
+                await self._publish_device(device, readonly=False)
+            except Exception:
+                _LOGGER.exception("Failed to publish device %s (%s)", device.name, device_id)
 
         for device_id in self._readonly_devices:
             device = dev_reg.async_get(device_id)
             if device is None:
                 _LOGGER.warning("Selected device %s not found in registry", device_id)
                 continue
-            await self._publish_device(device, readonly=True)
+            try:
+                await self._publish_device(device, readonly=True)
+            except Exception:
+                _LOGGER.exception("Failed to publish device %s (%s)", device.name, device_id)
 
     async def _publish_device(
         self, device: dr.DeviceEntry, readonly: bool = False
@@ -158,23 +164,29 @@ class Publisher:
 
         entity_list = []
         for entry in entities:
-            state = self._hass.states.get(entry.entity_id)
-            entity_data = {
-                "entity_id": entry.entity_id,
-                "unique_id": entry.unique_id,
-                "domain": entry.domain,
-                "name": entry.name or entry.original_name or "",
-                "device_class": entry.device_class or entry.original_device_class,
-                "unit_of_measurement": entry.unit_of_measurement,
-                "icon": entry.icon or entry.original_icon,
-                "attributes": dict(state.attributes) if state else {},
-                "readonly": readonly,
-            }
-            entity_list.append(entity_data)
+            try:
+                state = self._hass.states.get(entry.entity_id)
+                entity_data = {
+                    "entity_id": entry.entity_id,
+                    "unique_id": entry.unique_id,
+                    "domain": entry.domain,
+                    "name": entry.name or entry.original_name or "",
+                    "device_class": entry.device_class or entry.original_device_class,
+                    "unit_of_measurement": entry.unit_of_measurement,
+                    "icon": entry.icon or entry.original_icon,
+                    "attributes": _serialize_attributes(state.attributes) if state else {},
+                    "readonly": readonly,
+                }
+                entity_list.append(entity_data)
 
-            # Also publish initial state
-            if state:
-                await self._publish_entity_state(entry.entity_id, state)
+                # Also publish initial state
+                if state:
+                    await self._publish_entity_state(entry.entity_id, state)
+            except Exception:
+                _LOGGER.warning(
+                    "Failed to publish entity %s, skipping", entry.entity_id,
+                    exc_info=True,
+                )
 
         # Build device identifiers as serializable lists
         identifiers = [list(i) for i in device.identifiers] if device.identifiers else []
@@ -212,25 +224,32 @@ class Publisher:
         entity_list = []
 
         for entity_id in all_entities:
-            entry = ent_reg.async_get(entity_id)
-            state = self._hass.states.get(entity_id)
+            try:
+                entry = ent_reg.async_get(entity_id)
+                state = self._hass.states.get(entity_id)
 
-            # Derive domain from entity_id if no registry entry
-            domain = entry.domain if entry else entity_id.split(".", 1)[0]
-            unique_id = entry.unique_id if entry else entity_id
+                # Derive domain from entity_id if no registry entry
+                domain = entry.domain if entry else entity_id.split(".", 1)[0]
+                unique_id = entry.unique_id if entry else entity_id
 
-            entity_data = {
-                "entity_id": entity_id,
-                "unique_id": unique_id,
-                "domain": domain,
-                "name": (entry.name or entry.original_name or "") if entry else entity_id.split(".", 1)[-1],
-                "device_class": (entry.device_class or entry.original_device_class) if entry else None,
-                "unit_of_measurement": entry.unit_of_measurement if entry else None,
-                "icon": (entry.icon or entry.original_icon) if entry else None,
-                "attributes": dict(state.attributes) if state else {},
-                "readonly": entity_id in ro_set,
-            }
-            entity_list.append(entity_data)
+                entity_data = {
+                    "entity_id": entity_id,
+                    "unique_id": unique_id,
+                    "domain": domain,
+                    "name": (entry.name or entry.original_name or "") if entry else entity_id.split(".", 1)[-1],
+                    "device_class": (entry.device_class or entry.original_device_class) if entry else None,
+                    "unit_of_measurement": entry.unit_of_measurement if entry else None,
+                    "icon": (entry.icon or entry.original_icon) if entry else None,
+                    "attributes": _serialize_attributes(state.attributes) if state else {},
+                    "readonly": entity_id in ro_set,
+                }
+                entity_list.append(entity_data)
+            except Exception:
+                _LOGGER.warning(
+                    "Failed to publish entity %s, skipping", entity_id,
+                    exc_info=True,
+                )
+                continue
 
             # Also publish initial state
             if state:
