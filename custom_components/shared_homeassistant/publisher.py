@@ -53,19 +53,28 @@ class Publisher:
         command_topic = f"{TOPIC_PREFIX}/{self._instance_id}/commands/#"
         await self._mqtt.async_subscribe(command_topic, self._handle_command)
 
-        # Publish all selected devices and their entities
-        await self._publish_all_devices()
+        # Initial publish of retained device/state messages
+        await self._publish_retained_state()
 
-        # Publish all individually selected entities
-        await self._publish_selected_entities()
+        # Re-publish retained messages on every MQTT reconnect — broker
+        # restarts or VM pauses can cause retained state to drift, and
+        # without this the receiver stays stuck until manual reload.
+        self._mqtt.add_reconnect_callback(self._publish_retained_state)
 
         # Listen for state changes
         self._unsub_state_listener = self._hass.bus.async_listen(
             "state_changed", self._handle_state_changed
         )
 
+    async def _publish_retained_state(self) -> None:
+        """Publish all retained device info and entity states."""
+        await self._publish_all_devices()
+        await self._publish_selected_entities()
+
     async def async_stop(self) -> None:
         """Stop publishing and clear retained messages."""
+        self._mqtt.remove_reconnect_callback(self._publish_retained_state)
+
         if self._unsub_state_listener:
             self._unsub_state_listener()
             self._unsub_state_listener = None

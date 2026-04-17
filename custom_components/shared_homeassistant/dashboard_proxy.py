@@ -72,8 +72,18 @@ class DashboardProxy:
         if self._share_dashboards and self._instance_url:
             await self._publish_dashboard_info()
 
+        # Re-publish dashboard info on every MQTT reconnect to recover from
+        # retained-message loss (broker restart / VM pause).
+        self._mqtt.add_reconnect_callback(self._republish_on_reconnect)
+
+    async def _republish_on_reconnect(self) -> None:
+        """Re-publish dashboard info after an MQTT reconnect."""
+        if self._share_dashboards and self._instance_url:
+            await self._publish_dashboard_info()
+
     async def async_stop(self) -> None:
         """Stop dashboard sharing."""
+        self._mqtt.remove_reconnect_callback(self._republish_on_reconnect)
         await self._mqtt.async_unsubscribe(TOPIC_SUB_DASHBOARD_INFO)
 
         if self._share_dashboards:

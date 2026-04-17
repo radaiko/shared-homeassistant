@@ -49,6 +49,7 @@ class MQTTClient:
         self._shutdown = False
 
         self._subscriptions: dict[str, Callable[[str, bytes], Coroutine]] = {}
+        self._reconnect_callbacks: list[Callable[[], Coroutine]] = []
 
         # Last Will and Testament
         self._will_topic = TOPIC_HEARTBEAT.format(instance_id=instance_id)
@@ -120,6 +121,14 @@ class MQTTClient:
         for topic in self._subscriptions:
             await self._client.subscribe(topic)
 
+        # Fire reconnect callbacks so publishers can refresh retained state
+        # (important after broker restarts or VM pauses that drop retained msgs)
+        for callback in list(self._reconnect_callbacks):
+            try:
+                await callback()
+            except Exception:
+                _LOGGER.exception("Reconnect callback failed")
+
         # Start listening for messages
         self._listen_task = asyncio.create_task(self._listen())
 
@@ -142,7 +151,9 @@ class MQTTClient:
                             _LOGGER.exception(
                                 "Error in MQTT callback for topic %s", topic
                             )
-        except aiomqtt.MqttError as err:
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
             self._connected.clear()
             if not self._shutdown:
                 _LOGGER.warning("MQTT connection lost: %s", err)
@@ -226,6 +237,25 @@ class MQTTClient:
                 await self._client.unsubscribe(topic)
             except Exception:
                 pass
+
+    def add_reconnect_callback(
+        self, callback: Callable[[], Coroutine]
+    ) -> None:
+        """Register a coroutine to run after every successful (re)connect.
+
+        Use this to refresh broker-side state (retained messages, etc.) that
+        would otherwise only be set once at startup. Callbacks run after
+        subscriptions are re-established and before the message listener starts.
+        """
+        if callback not in self._reconnect_callbacks:
+            self._reconnect_callbacks.append(callback)
+
+    def remove_reconnect_callback(
+        self, callback: Callable[[], Coroutine]
+    ) -> None:
+        """Unregister a reconnect callback."""
+        if callback in self._reconnect_callbacks:
+            self._reconnect_callbacks.remove(callback)
 
 
 def _topic_matches(pattern: str, topic: str) -> bool:
