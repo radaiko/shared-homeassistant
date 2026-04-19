@@ -2,11 +2,11 @@
   "config": {
     "step": {
       "user": {
-        "title": "Own MQTT Broker",
-        "description": "Configure this HA's local MQTT broker (e.g. the Mosquitto add-on). Peers will publish history responses here.",
+        "title": "This instance + own broker",
+        "description": "Give THIS Home Assistant a name — it's shown on the peer side as the bridge label (e.g. 'via Radlingmayr'). Then configure this HA's local MQTT broker (typically the Mosquitto add-on on this same host). Peers will publish history responses here.",
         "data": {
-          "instance_name": "Instance Name",
-          "instance_id": "Instance ID",
+          "instance_name": "Name of THIS instance (shown on peer)",
+          "instance_id": "Instance ID (keep the generated value)",
           "own_broker_host": "Host",
           "own_broker_port": "Port",
           "own_broker_username": "Username",

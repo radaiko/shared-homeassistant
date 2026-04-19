@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from homeassistant.core import Event, HomeAssistant, State, callback
@@ -39,6 +40,20 @@ from .const import (
 from .mqtt_client import MQTTClient
 
 _LOGGER = logging.getLogger(__name__)
+
+_OBJECT_ID_SAFE = re.compile(r"[^a-zA-Z0-9_-]+")
+
+
+def _safe_object_id(raw: str) -> str:
+    """Coerce a string into a valid MQTT Discovery object_id.
+
+    HA's discovery topic matcher only accepts [a-zA-Z0-9_-]+ in the
+    object_id slot. Unique IDs from other integrations often contain
+    dots, colons, or spaces, which HA silently rejects.
+    """
+    safe = _OBJECT_ID_SAFE.sub("_", raw)
+    return safe.strip("_") or "entity"
+
 
 SKIP_ATTRIBUTES = {
     "friendly_name",
@@ -265,6 +280,12 @@ class Publisher:
             # On initial start, reset tracking to match reality
             self._published_entities = {}
 
+        _LOGGER.info(
+            "Publishing %d shared entities to peer broker (discovery prefix: %s)",
+            len(entities),
+            self._discovery_prefix,
+        )
+
         for entity_id, meta in entities.items():
             try:
                 await self._publish_entity(entity_id, meta)
@@ -305,6 +326,9 @@ class Publisher:
         await self._mqtt.async_publish(
             discovery_topic, json.dumps(config), retain=True
         )
+        _LOGGER.debug(
+            "Published discovery for %s → %s", entity_id, discovery_topic
+        )
 
         # Publish current state + attrs
         if state is not None:
@@ -343,7 +367,10 @@ class Publisher:
         """Build the MQTT Discovery payload for one entity."""
         domain = entry.domain
 
-        unique_id = f"shared_ha_{self._instance_id}_{entry.unique_id or entity_id}"
+        raw_uid = entry.unique_id or entity_id
+        unique_id = _safe_object_id(
+            f"shared_ha_{self._instance_id}_{raw_uid}"
+        )
         state_topic = TOPIC_ENTITY_STATE.format(
             instance_id=self._instance_id, entity_id=entity_id
         )
