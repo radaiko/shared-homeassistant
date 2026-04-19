@@ -1,17 +1,13 @@
-"""MQTT client wrapper for Shared Home Assistant."""
+"""MQTT client wrapper for Shared Home Assistant v2."""
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import ssl
 from collections.abc import Callable, Coroutine
-from typing import Any
 
 import aiomqtt
-
-from .const import TOPIC_HEARTBEAT
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -21,7 +17,7 @@ _MAX_RECONNECT_DELAY = 300
 
 
 class MQTTClient:
-    """Async MQTT client with auto-reconnect and LWT support."""
+    """Async MQTT client with auto-reconnect and optional LWT support."""
 
     def __init__(
         self,
@@ -32,8 +28,16 @@ class MQTTClient:
         username: str | None = None,
         password: str | None = None,
         use_tls: bool = False,
+        will_topic: str | None = None,
+        will_payload: str | None = None,
     ) -> None:
-        """Initialize the MQTT client."""
+        """Initialize the MQTT client.
+
+        If ``will_topic`` and ``will_payload`` are both provided, the broker
+        is configured with a Last Will and Testament that retains
+        ``will_payload`` on ``will_topic`` if the client disconnects
+        ungracefully.
+        """
         self._host = host
         self._port = port
         self._instance_id = instance_id
@@ -41,6 +45,8 @@ class MQTTClient:
         self._username = username
         self._password = password
         self._use_tls = use_tls
+        self._will_topic = will_topic
+        self._will_payload = will_payload
 
         self._client: aiomqtt.Client | None = None
         self._listen_task: asyncio.Task | None = None
@@ -50,12 +56,6 @@ class MQTTClient:
 
         self._subscriptions: dict[str, Callable[[str, bytes], Coroutine]] = {}
         self._reconnect_callbacks: list[Callable[[], Coroutine]] = []
-
-        # Last Will and Testament
-        self._will_topic = TOPIC_HEARTBEAT.format(instance_id=instance_id)
-        self._will_payload = json.dumps(
-            {"online": False, "instance_name": instance_name}
-        )
 
     @property
     def connected(self) -> bool:
@@ -84,12 +84,14 @@ class MQTTClient:
             tls_context.verify_mode = ssl.CERT_NONE
             tls_params = tls_context
 
-        will = aiomqtt.Will(
-            topic=self._will_topic,
-            payload=self._will_payload.encode(),
-            qos=1,
-            retain=True,
-        )
+        will = None
+        if self._will_topic and self._will_payload is not None:
+            will = aiomqtt.Will(
+                topic=self._will_topic,
+                payload=self._will_payload.encode(),
+                qos=1,
+                retain=True,
+            )
 
         self._client = aiomqtt.Client(
             hostname=self._host,
@@ -108,13 +110,6 @@ class MQTTClient:
             self._host,
             self._port,
             self._instance_id,
-        )
-
-        # Publish online heartbeat
-        await self.async_publish(
-            self._will_topic,
-            json.dumps({"online": True, "instance_name": self._instance_name}),
-            retain=True,
         )
 
         # Resubscribe to all topics
@@ -193,17 +188,6 @@ class MQTTClient:
                 pass
 
         if self._client:
-            # Publish offline heartbeat before disconnecting
-            try:
-                await self.async_publish(
-                    self._will_topic,
-                    json.dumps(
-                        {"online": False, "instance_name": self._instance_name}
-                    ),
-                    retain=True,
-                )
-            except Exception:
-                pass
             try:
                 await self._client.__aexit__(None, None, None)
             except Exception:

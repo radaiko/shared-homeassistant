@@ -22,6 +22,8 @@ from .const import (
     CONF_PEER_BROKER_TLS,
     CONF_PEER_BROKER_USERNAME,
     DOMAIN,
+    PAYLOAD_OFFLINE,
+    TOPIC_BRIDGE_AVAILABILITY,
     SharedHARuntimeData,
 )
 from .history_sync import HistoryConsumer, HistoryProvider
@@ -57,6 +59,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: SharedHAConfigEntry) -> 
         username=data.get(CONF_PEER_BROKER_USERNAME) or None,
         password=data.get(CONF_PEER_BROKER_PASSWORD) or None,
         use_tls=data.get(CONF_PEER_BROKER_TLS, False),
+        will_topic=TOPIC_BRIDGE_AVAILABILITY.format(instance_id=instance_id),
+        will_payload=PAYLOAD_OFFLINE,
     )
 
     publisher = Publisher(hass, peer_mqtt, dict(data))
@@ -134,6 +138,23 @@ async def _wait_and_start_own(mqtt: MQTTClient, provider: HistoryProvider) -> No
         await provider.async_start()
     except asyncio.TimeoutError:
         _LOGGER.warning("Timed out waiting for own broker; history_provider not started")
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Handle config entry migration.
+
+    v2 has a fundamentally different schema (dual-broker + MQTT Discovery).
+    There's no clean data migration from v1 — the user must remove the old
+    config entry and add a fresh one.
+    """
+    if entry.version < 2:
+        _LOGGER.error(
+            "Cannot migrate v1 Shared HA config entry to v2: topology and "
+            "data schema are incompatible. Please remove this config entry "
+            "and re-add the integration with the v2 flow."
+        )
+        return False
+    return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: SharedHAConfigEntry) -> bool:
