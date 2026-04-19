@@ -1,4 +1,4 @@
-"""Shared Home Assistant - Share devices and entities between HA instances via MQTT."""
+"""Shared Home Assistant v2 — share devices between HA instances via MQTT Discovery."""
 
 from __future__ import annotations
 
@@ -9,148 +9,158 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .const import (
-    DOMAIN,
-    CONF_BROKER_HOST,
-    CONF_BROKER_PORT,
-    CONF_BROKER_USERNAME,
-    CONF_BROKER_PASSWORD,
-    CONF_USE_TLS,
     CONF_INSTANCE_ID,
     CONF_INSTANCE_NAME,
-    CONF_SELECTED_DEVICES,
-    CONF_SELECTED_ENTITIES,
-    CONF_READONLY_DEVICES,
-    CONF_READONLY_ENTITIES,
-    PLATFORMS,
+    CONF_OWN_BROKER_HOST,
+    CONF_OWN_BROKER_PASSWORD,
+    CONF_OWN_BROKER_PORT,
+    CONF_OWN_BROKER_TLS,
+    CONF_OWN_BROKER_USERNAME,
+    CONF_PEER_BROKER_HOST,
+    CONF_PEER_BROKER_PASSWORD,
+    CONF_PEER_BROKER_PORT,
+    CONF_PEER_BROKER_TLS,
+    CONF_PEER_BROKER_USERNAME,
+    DOMAIN,
     SharedHARuntimeData,
 )
-from .dashboard_proxy import DashboardProxy
 from .history_sync import HistoryConsumer, HistoryProvider
 from .mqtt_client import MQTTClient
 from .publisher import Publisher
-from .subscriber import Subscriber
-
-type SharedHAConfigEntry = ConfigEntry[SharedHARuntimeData]
 
 _LOGGER = logging.getLogger(__name__)
 
+type SharedHAConfigEntry = ConfigEntry[SharedHARuntimeData]
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: SharedHAConfigEntry) -> bool:
-    """Set up Shared Home Assistant from a config entry."""
+    """Set up Shared Home Assistant v2 from a config entry."""
     data = entry.data
     instance_id = data[CONF_INSTANCE_ID]
+    instance_name = data[CONF_INSTANCE_NAME]
 
-    # Create MQTT client
-    mqtt_client = MQTTClient(
-        host=data[CONF_BROKER_HOST],
-        port=int(data[CONF_BROKER_PORT]),
-        instance_id=instance_id,
-        instance_name=data[CONF_INSTANCE_NAME],
-        username=data.get(CONF_BROKER_USERNAME) or None,
-        password=data.get(CONF_BROKER_PASSWORD) or None,
-        use_tls=data.get(CONF_USE_TLS, False),
+    own_mqtt = MQTTClient(
+        host=data[CONF_OWN_BROKER_HOST],
+        port=int(data[CONF_OWN_BROKER_PORT]),
+        instance_id=f"{instance_id}_own",
+        instance_name=instance_name,
+        username=data.get(CONF_OWN_BROKER_USERNAME) or None,
+        password=data.get(CONF_OWN_BROKER_PASSWORD) or None,
+        use_tls=data.get(CONF_OWN_BROKER_TLS, False),
     )
 
-    # Create all components
-    publisher = Publisher(hass, mqtt_client, data)
-    subscriber = Subscriber(hass, mqtt_client, entry)
-    history_provider = HistoryProvider(hass, mqtt_client, instance_id)
-    history_consumer = HistoryConsumer(hass, mqtt_client, instance_id)
-    dashboard_proxy = DashboardProxy(hass, mqtt_client, instance_id, data)
+    peer_mqtt = MQTTClient(
+        host=data[CONF_PEER_BROKER_HOST],
+        port=int(data[CONF_PEER_BROKER_PORT]),
+        instance_id=f"{instance_id}_peer",
+        instance_name=instance_name,
+        username=data.get(CONF_PEER_BROKER_USERNAME) or None,
+        password=data.get(CONF_PEER_BROKER_PASSWORD) or None,
+        use_tls=data.get(CONF_PEER_BROKER_TLS, False),
+    )
 
-    # Store in runtime_data
+    publisher = Publisher(hass, peer_mqtt, dict(data))
+    history_provider = HistoryProvider(hass, own_mqtt, instance_id)
+    history_consumer = HistoryConsumer(hass, peer_mqtt, instance_id)
+
     entry.runtime_data = SharedHARuntimeData(
-        mqtt_client=mqtt_client,
+        own_mqtt=own_mqtt,
+        peer_mqtt=peer_mqtt,
         publisher=publisher,
-        subscriber=subscriber,
         history_provider=history_provider,
         history_consumer=history_consumer,
-        dashboard_proxy=dashboard_proxy,
     )
 
-    # Pre-register all MQTT subscriptions BEFORE connecting
-    # This ensures they are in _subscriptions and will be (re)subscribed
-    # on every connect/reconnect, even during unstable startup
-    await subscriber.async_register_subscriptions()
+    # Register MQTT subscriptions before connect so they resubscribe on reconnect
     await history_provider.async_register_subscriptions()
     await history_consumer.async_register_subscriptions()
-    await dashboard_proxy.async_register_subscriptions()
 
-    # Connect to MQTT
-    try:
-        await mqtt_client.async_connect()
-    except Exception:
-        _LOGGER.exception("Failed to connect to MQTT broker %s", data[CONF_BROKER_HOST])
-        _LOGGER.warning("Will retry MQTT connection in background")
+    # Connect both brokers in parallel (they're independent)
+    results = await asyncio.gather(
+        _safe_connect(own_mqtt, "own"),
+        _safe_connect(peer_mqtt, "peer"),
+        return_exceptions=False,
+    )
+    own_ok, peer_ok = results
 
-    # Set up platforms
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
-    # Start all components after platforms are loaded
-    if mqtt_client.connected:
-        await _start_components(
-            publisher, subscriber, history_provider, history_consumer, dashboard_proxy
-        )
-    else:
-        async def _start_when_connected():
-            """Start components once MQTT connects."""
+    async def _start_when_ready() -> None:
+        # Publisher depends on peer broker connection; history_provider on own
+        if peer_ok:
             try:
-                await asyncio.wait_for(mqtt_client._connected.wait(), timeout=60)
-                await _start_components(
-                    publisher, subscriber, history_provider, history_consumer,
-                    dashboard_proxy,
-                )
-            except asyncio.TimeoutError:
-                _LOGGER.warning("Timed out waiting for MQTT connection, will retry")
+                await publisher.async_start()
+                await history_consumer.async_start()
+            except Exception:
+                _LOGGER.exception("Failed to start peer-side components")
+        else:
+            hass.async_create_task(_wait_and_start_peer(peer_mqtt, publisher, history_consumer))
 
-        hass.async_create_task(_start_when_connected())
+        if own_ok:
+            try:
+                await history_provider.async_start()
+            except Exception:
+                _LOGGER.exception("Failed to start own-side components")
+        else:
+            hass.async_create_task(_wait_and_start_own(own_mqtt, history_provider))
 
-    # Register options update listener
+    hass.async_create_task(_start_when_ready())
+
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
-
     return True
 
 
-async def _start_components(
-    publisher: Publisher,
-    subscriber: Subscriber,
-    history_provider: HistoryProvider,
-    history_consumer: HistoryConsumer,
-    dashboard_proxy: DashboardProxy,
+async def _safe_connect(mqtt: MQTTClient, label: str) -> bool:
+    try:
+        await mqtt.async_connect()
+        return True
+    except Exception:
+        _LOGGER.exception("Failed to connect to %s broker; will retry in background", label)
+        return False
+
+
+async def _wait_and_start_peer(
+    mqtt: MQTTClient, publisher: Publisher, consumer: HistoryConsumer
 ) -> None:
-    """Start publisher, subscriber, history sync, and dashboard proxy."""
-    await publisher.async_start()
-    await subscriber.async_start()
-    await history_provider.async_start()
-    await history_consumer.async_start()
-    await dashboard_proxy.async_start()
+    try:
+        await asyncio.wait_for(mqtt._connected.wait(), timeout=600)
+        await publisher.async_start()
+        await consumer.async_start()
+    except asyncio.TimeoutError:
+        _LOGGER.warning("Timed out waiting for peer broker; components not started")
+
+
+async def _wait_and_start_own(mqtt: MQTTClient, provider: HistoryProvider) -> None:
+    try:
+        await asyncio.wait_for(mqtt._connected.wait(), timeout=600)
+        await provider.async_start()
+    except asyncio.TimeoutError:
+        _LOGGER.warning("Timed out waiting for own broker; history_provider not started")
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: SharedHAConfigEntry) -> bool:
-    """Unload a config entry."""
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-
-    if unload_ok:
-        rt = entry.runtime_data
+    rt = entry.runtime_data
+    try:
         await rt.publisher.async_stop()
-        await rt.subscriber.async_stop()
-        await rt.history_provider.async_stop()
+    except Exception:
+        _LOGGER.exception("publisher stop failed")
+    try:
         await rt.history_consumer.async_stop()
-        await rt.dashboard_proxy.async_stop()
-        await rt.mqtt_client.async_disconnect()
+    except Exception:
+        _LOGGER.exception("history_consumer stop failed")
+    try:
+        await rt.history_provider.async_stop()
+    except Exception:
+        _LOGGER.exception("history_provider stop failed")
 
-    return unload_ok
+    await asyncio.gather(
+        rt.peer_mqtt.async_disconnect(),
+        rt.own_mqtt.async_disconnect(),
+        return_exceptions=True,
+    )
+    return True
 
 
 async def _async_update_listener(
     hass: HomeAssistant, entry: SharedHAConfigEntry
 ) -> None:
-    """Handle options update."""
     rt = entry.runtime_data
-    await rt.publisher.async_update_selection(
-        selected_devices=entry.data.get(CONF_SELECTED_DEVICES, []),
-        selected_entities=entry.data.get(CONF_SELECTED_ENTITIES, []),
-        readonly_devices=entry.data.get(CONF_READONLY_DEVICES, []),
-        readonly_entities=entry.data.get(CONF_READONLY_ENTITIES, []),
-    )
-    await rt.dashboard_proxy.async_update_config(entry.data)
+    await rt.publisher.async_update_selection(dict(entry.data))

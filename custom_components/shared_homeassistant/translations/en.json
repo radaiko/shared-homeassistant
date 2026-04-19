@@ -2,32 +2,40 @@
   "config": {
     "step": {
       "user": {
-        "title": "MQTT Broker Configuration",
-        "description": "Configure the shared MQTT broker that all instances will connect to.\n\n**Security Warning:** If you enable dashboard sharing, an authentication token will be transmitted via MQTT. Make sure your MQTT broker uses authentication and TLS/SSL encryption.",
-        "data": {
-          "broker_host": "Broker Host",
-          "broker_port": "Broker Port",
-          "broker_username": "Username",
-          "broker_password": "Password",
-          "use_tls": "Use TLS"
-        }
-      },
-      "instance": {
-        "title": "Instance Identification",
-        "description": "Give this Home Assistant instance a name that will be shown on other instances. The Instance ID is auto-generated and used internally.",
+        "title": "Own MQTT Broker",
+        "description": "Configure this HA's local MQTT broker (e.g. the Mosquitto add-on). Peers will publish history responses here.",
         "data": {
           "instance_name": "Instance Name",
-          "instance_id": "Instance ID"
+          "instance_id": "Instance ID",
+          "own_broker_host": "Host",
+          "own_broker_port": "Port",
+          "own_broker_username": "Username",
+          "own_broker_password": "Password",
+          "own_broker_tls": "Use TLS"
+        }
+      },
+      "peer": {
+        "title": "Peer MQTT Broker",
+        "description": "Configure the remote HA's broker. Shared entities will be published here so the peer's native MQTT integration can discover them.",
+        "data": {
+          "peer_broker_host": "Host",
+          "peer_broker_port": "Port",
+          "peer_broker_username": "Username",
+          "peer_broker_password": "Password",
+          "peer_broker_tls": "Use TLS",
+          "peer_discovery_prefix": "MQTT Discovery prefix (usually 'homeassistant')"
         }
       },
       "selection": {
-        "title": "Share Devices & Entities",
-        "description": "Select which devices and entities to share. Read-write allows control from other instances, read-only only shares the state.",
+        "title": "Share Selection",
+        "description": "Pick integrations, devices, and/or entities to share. Anything added to the read-only lists will still be visible on the peer but won't accept commands.",
         "data": {
-          "selected_devices": "Devices (read-write)",
+          "shared_integrations": "Integrations",
+          "readonly_integrations": "Integrations (read-only)",
+          "shared_devices": "Devices",
           "readonly_devices": "Devices (read-only)",
-          "selected_entities": "Entities (read-write)",
-          "readonly_entities": "Entities (read-only)"
+          "shared_entities": "Individual entities",
+          "readonly_entities": "Individual entities (read-only)"
         }
       }
     },
@@ -38,23 +46,15 @@
   "options": {
     "step": {
       "init": {
-        "title": "Devices & Entities",
-        "description": "Select which devices and entities to share. Read-write allows control from other instances, read-only only shares the state.",
+        "title": "Share Selection",
+        "description": "Pick integrations, devices, and/or entities to share. Read-only lists share state without accepting commands.",
         "data": {
-          "selected_devices": "Devices (read-write)",
+          "shared_integrations": "Integrations",
+          "readonly_integrations": "Integrations (read-only)",
+          "shared_devices": "Devices",
           "readonly_devices": "Devices (read-only)",
-          "selected_entities": "Entities (read-write)",
-          "readonly_entities": "Entities (read-only)",
-          "entity_prefix": "Prefix for received entities (e.g. 'house')"
-        }
-      },
-      "dashboards": {
-        "title": "Dashboard Sharing",
-        "description": "Share dashboards from this instance with other instances. They will appear in the sidebar of receiving instances.\n\nRequires `use_x_frame_options: false` in this instance's configuration.yaml under `http:`. Users will need to log in once in the embedded dashboard.",
-        "data": {
-          "share_dashboards": "Enable dashboard sharing",
-          "instance_url": "This instance's URL (e.g. http://192.168.1.100:8123)",
-          "shared_dashboard_list": "Dashboards to share"
+          "shared_entities": "Individual entities",
+          "readonly_entities": "Individual entities (read-only)"
         }
       }
     }

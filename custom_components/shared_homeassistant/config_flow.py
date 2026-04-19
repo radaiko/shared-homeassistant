@@ -1,4 +1,4 @@
-"""Config flow for Shared Home Assistant integration."""
+"""Config flow for Shared Home Assistant v2."""
 
 from __future__ import annotations
 
@@ -6,175 +6,158 @@ import logging
 import uuid
 from typing import Any
 
-_LOGGER = logging.getLogger(__name__)
-
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigFlow, OptionsFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
 from homeassistant.core import callback
 from homeassistant.helpers.selector import (
+    BooleanSelector,
     DeviceSelector,
     DeviceSelectorConfig,
     EntitySelector,
     EntitySelectorConfig,
-    SelectSelector,
-    SelectSelectorConfig,
-    SelectSelectorMode,
-    SelectOptionDict,
-    TextSelector,
-    TextSelectorConfig,
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
-    BooleanSelector,
+    SelectOptionDict,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+    TextSelector,
+    TextSelectorConfig,
 )
 
 from .const import (
-    DOMAIN,
-    CONF_BROKER_HOST,
-    CONF_BROKER_PORT,
-    CONF_BROKER_USERNAME,
-    CONF_BROKER_PASSWORD,
-    CONF_USE_TLS,
-    CONF_INSTANCE_NAME,
     CONF_INSTANCE_ID,
-    CONF_SELECTED_DEVICES,
-    CONF_SELECTED_ENTITIES,
+    CONF_INSTANCE_NAME,
+    CONF_OWN_BROKER_HOST,
+    CONF_OWN_BROKER_PASSWORD,
+    CONF_OWN_BROKER_PORT,
+    CONF_OWN_BROKER_TLS,
+    CONF_OWN_BROKER_USERNAME,
+    CONF_PEER_BROKER_HOST,
+    CONF_PEER_BROKER_PASSWORD,
+    CONF_PEER_BROKER_PORT,
+    CONF_PEER_BROKER_TLS,
+    CONF_PEER_BROKER_USERNAME,
+    CONF_PEER_DISCOVERY_PREFIX,
     CONF_READONLY_DEVICES,
     CONF_READONLY_ENTITIES,
-    CONF_ENTITY_PREFIX,
-    CONF_SHARE_DASHBOARDS,
-    CONF_SHARED_DASHBOARD_LIST,
-    CONF_INSTANCE_URL,
-    DEFAULT_PORT,
-    DEFAULT_ENTITY_PREFIX,
-    PLATFORMS,
+    CONF_READONLY_INTEGRATIONS,
+    CONF_SHARED_DEVICES,
+    CONF_SHARED_ENTITIES,
+    CONF_SHARED_INTEGRATIONS,
+    DEFAULT_BROKER_PORT,
+    DEFAULT_DISCOVERY_PREFIX,
+    DOMAIN,
+    SUPPORTED_DOMAINS,
 )
 
+_LOGGER = logging.getLogger(__name__)
 
-def _selection_schema(
-    devices_rw: list = [],
-    devices_ro: list = [],
-    entities_rw: list = [],
-    entities_ro: list = [],
-) -> vol.Schema:
-    """Build the device/entity selection schema."""
-    return vol.Schema(
-        {
-            vol.Optional(
-                CONF_SELECTED_DEVICES, default=devices_rw
-            ): DeviceSelector(DeviceSelectorConfig(multiple=True)),
-            vol.Optional(
-                CONF_READONLY_DEVICES, default=devices_ro
-            ): DeviceSelector(DeviceSelectorConfig(multiple=True)),
-            vol.Optional(
-                CONF_SELECTED_ENTITIES, default=entities_rw
-            ): EntitySelector(
-                EntitySelectorConfig(multiple=True, domain=PLATFORMS)
-            ),
-            vol.Optional(
-                CONF_READONLY_ENTITIES, default=entities_ro
-            ): EntitySelector(
-                EntitySelectorConfig(multiple=True, domain=PLATFORMS)
-            ),
-        }
-    )
+
+def _broker_schema(prefix: str, defaults: dict[str, Any]) -> dict:
+    """Build a broker-subform schema using the given key prefix."""
+    return {
+        vol.Required(
+            f"{prefix}_host", default=defaults.get(f"{prefix}_host", "")
+        ): TextSelector(TextSelectorConfig(type="text")),
+        vol.Required(
+            f"{prefix}_port",
+            default=defaults.get(f"{prefix}_port", DEFAULT_BROKER_PORT),
+        ): NumberSelector(
+            NumberSelectorConfig(min=1, max=65535, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Optional(
+            f"{prefix}_username",
+            default=defaults.get(f"{prefix}_username", ""),
+        ): TextSelector(TextSelectorConfig(type="text")),
+        vol.Optional(
+            f"{prefix}_password",
+            default=defaults.get(f"{prefix}_password", ""),
+        ): TextSelector(TextSelectorConfig(type="password")),
+        vol.Required(
+            f"{prefix}_tls", default=defaults.get(f"{prefix}_tls", False)
+        ): BooleanSelector(),
+    }
+
+
+def _integration_options(hass) -> list[SelectOptionDict]:
+    """Build selector options for shareable integrations (config entries)."""
+    options: list[SelectOptionDict] = []
+    for entry in hass.config_entries.async_entries():
+        if entry.domain in {"mqtt", DOMAIN}:
+            continue
+        label = entry.title or entry.domain
+        if entry.title and entry.title != entry.domain:
+            label = f"{entry.title} ({entry.domain})"
+        options.append(SelectOptionDict(value=entry.entry_id, label=label))
+    options.sort(key=lambda o: o["label"].lower())
+    return options
 
 
 class SharedHAConfigFlow(ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for Shared Home Assistant."""
+    """Initial config flow for Shared Home Assistant v2."""
 
-    VERSION = 1
+    VERSION = 2
 
     def __init__(self) -> None:
-        """Initialize the config flow."""
         self._data: dict[str, Any] = {}
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Step 1: MQTT broker configuration."""
-        errors: dict[str, str] = {}
-
+        """Step 1: own broker + instance identity."""
         if user_input is not None:
             self._data.update(user_input)
-            return await self.async_step_instance()
-
-        return self.async_show_form(
-            step_id="user",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_BROKER_HOST): TextSelector(
-                        TextSelectorConfig(type="text")
-                    ),
-                    vol.Required(
-                        CONF_BROKER_PORT, default=DEFAULT_PORT
-                    ): NumberSelector(
-                        NumberSelectorConfig(
-                            min=1, max=65535, mode=NumberSelectorMode.BOX
-                        )
-                    ),
-                    vol.Optional(CONF_BROKER_USERNAME, default=""): TextSelector(
-                        TextSelectorConfig(type="text")
-                    ),
-                    vol.Optional(CONF_BROKER_PASSWORD, default=""): TextSelector(
-                        TextSelectorConfig(type="password")
-                    ),
-                    vol.Required(CONF_USE_TLS, default=False): BooleanSelector(),
-                }
-            ),
-            errors=errors,
-        )
-
-    async def async_step_instance(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Step 2: Instance identification."""
-        if user_input is not None:
-            self._data[CONF_INSTANCE_NAME] = user_input[CONF_INSTANCE_NAME]
-            self._data[CONF_INSTANCE_ID] = user_input.get(
-                CONF_INSTANCE_ID, str(uuid.uuid4())
-            )
-            return await self.async_step_selection()
+            return await self.async_step_peer()
 
         instance_id = str(uuid.uuid4())
 
-        return self.async_show_form(
-            step_id="instance",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_INSTANCE_NAME): TextSelector(
-                        TextSelectorConfig(type="text")
-                    ),
-                    vol.Required(
-                        CONF_INSTANCE_ID, default=instance_id
-                    ): TextSelector(TextSelectorConfig(type="text")),
-                }
-            ),
-            description_placeholders={"instance_id": instance_id},
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_INSTANCE_NAME): TextSelector(
+                    TextSelectorConfig(type="text")
+                ),
+                vol.Required(
+                    CONF_INSTANCE_ID, default=instance_id
+                ): TextSelector(TextSelectorConfig(type="text")),
+                **_broker_schema("own_broker", {}),
+            }
         )
+        return self.async_show_form(step_id="user", data_schema=schema)
+
+    async def async_step_peer(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Step 2: peer broker."""
+        if user_input is not None:
+            self._data.update(user_input)
+            return await self.async_step_selection()
+
+        schema = vol.Schema(
+            {
+                **_broker_schema("peer_broker", {}),
+                vol.Required(
+                    CONF_PEER_DISCOVERY_PREFIX, default=DEFAULT_DISCOVERY_PREFIX
+                ): TextSelector(TextSelectorConfig(type="text")),
+            }
+        )
+        return self.async_show_form(step_id="peer", data_schema=schema)
 
     async def async_step_selection(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Step 3: Device and entity selection."""
+        """Step 3: share selection + readonly flags."""
         if user_input is not None:
-            self._data[CONF_SELECTED_DEVICES] = user_input.get(
-                CONF_SELECTED_DEVICES, []
-            )
-            self._data[CONF_READONLY_DEVICES] = user_input.get(
-                CONF_READONLY_DEVICES, []
-            )
-            self._data[CONF_SELECTED_ENTITIES] = user_input.get(
-                CONF_SELECTED_ENTITIES, []
-            )
-            self._data[CONF_READONLY_ENTITIES] = user_input.get(
-                CONF_READONLY_ENTITIES, []
-            )
-
-            # Ensure port is int
-            self._data[CONF_BROKER_PORT] = int(self._data[CONF_BROKER_PORT])
-
+            self._data.update(user_input)
+            self._data[CONF_OWN_BROKER_PORT] = int(self._data[CONF_OWN_BROKER_PORT])
+            self._data[CONF_PEER_BROKER_PORT] = int(self._data[CONF_PEER_BROKER_PORT])
             return self.async_create_entry(
                 title=self._data[CONF_INSTANCE_NAME],
                 data=self._data,
@@ -182,138 +165,82 @@ class SharedHAConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="selection",
-            data_schema=_selection_schema(),
+            data_schema=_selection_schema(self.hass, {}),
         )
 
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry):
-        """Get the options flow for this handler."""
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
         return SharedHAOptionsFlow()
 
 
-class SharedHAOptionsFlow(OptionsFlow):
-    """Handle options flow for Shared Home Assistant."""
+def _selection_schema(hass, defaults: dict[str, Any]) -> vol.Schema:
+    """Schema for share-selection step."""
+    integration_options = _integration_options(hass)
+    domains = sorted(SUPPORTED_DOMAINS)
 
-    def __init__(self) -> None:
-        """Initialize options flow."""
-        self._data: dict[str, Any] = {}
+    return vol.Schema(
+        {
+            vol.Optional(
+                CONF_SHARED_INTEGRATIONS,
+                default=defaults.get(CONF_SHARED_INTEGRATIONS, []),
+            ): SelectSelector(
+                SelectSelectorConfig(
+                    options=integration_options,
+                    multiple=True,
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            ),
+            vol.Optional(
+                CONF_READONLY_INTEGRATIONS,
+                default=defaults.get(CONF_READONLY_INTEGRATIONS, []),
+            ): SelectSelector(
+                SelectSelectorConfig(
+                    options=integration_options,
+                    multiple=True,
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            ),
+            vol.Optional(
+                CONF_SHARED_DEVICES,
+                default=defaults.get(CONF_SHARED_DEVICES, []),
+            ): DeviceSelector(DeviceSelectorConfig(multiple=True)),
+            vol.Optional(
+                CONF_READONLY_DEVICES,
+                default=defaults.get(CONF_READONLY_DEVICES, []),
+            ): DeviceSelector(DeviceSelectorConfig(multiple=True)),
+            vol.Optional(
+                CONF_SHARED_ENTITIES,
+                default=defaults.get(CONF_SHARED_ENTITIES, []),
+            ): EntitySelector(
+                EntitySelectorConfig(multiple=True, domain=domains)
+            ),
+            vol.Optional(
+                CONF_READONLY_ENTITIES,
+                default=defaults.get(CONF_READONLY_ENTITIES, []),
+            ): EntitySelector(
+                EntitySelectorConfig(multiple=True, domain=domains)
+            ),
+        }
+    )
+
+
+class SharedHAOptionsFlow(OptionsFlow):
+    """Options flow — tweak share selection and broker details after setup."""
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Step 1: Entity sharing options."""
+        """Edit share selection."""
         if user_input is not None:
-            self._data.update(user_input)
-            return await self.async_step_dashboards()
-
-        current = self.config_entry.data
-
-        schema = vol.Schema(
-            {
-                vol.Optional(
-                    CONF_SELECTED_DEVICES,
-                    default=current.get(CONF_SELECTED_DEVICES, []),
-                ): DeviceSelector(DeviceSelectorConfig(multiple=True)),
-                vol.Optional(
-                    CONF_READONLY_DEVICES,
-                    default=current.get(CONF_READONLY_DEVICES, []),
-                ): DeviceSelector(DeviceSelectorConfig(multiple=True)),
-                vol.Optional(
-                    CONF_SELECTED_ENTITIES,
-                    default=current.get(CONF_SELECTED_ENTITIES, []),
-                ): EntitySelector(
-                    EntitySelectorConfig(multiple=True, domain=PLATFORMS)
-                ),
-                vol.Optional(
-                    CONF_READONLY_ENTITIES,
-                    default=current.get(CONF_READONLY_ENTITIES, []),
-                ): EntitySelector(
-                    EntitySelectorConfig(multiple=True, domain=PLATFORMS)
-                ),
-                vol.Optional(
-                    CONF_ENTITY_PREFIX,
-                    default=current.get(CONF_ENTITY_PREFIX, DEFAULT_ENTITY_PREFIX),
-                ): TextSelector(TextSelectorConfig(type="text")),
-            }
-        )
-
-        return self.async_show_form(step_id="init", data_schema=schema)
-
-    async def async_step_dashboards(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Step 2: Dashboard sharing options."""
-        if user_input is not None:
-            self._data.update(user_input)
-            # Merge with existing config entry data (preserve broker/instance config)
-            existing = dict(self.config_entry.data) if self.config_entry.data else {}
-            if not existing:
-                _LOGGER.error("Config entry data is empty! Cannot save options.")
-                return self.async_create_entry(title="", data={})
-            new_data = {**existing, **self._data}
+            existing = dict(self.config_entry.data)
+            merged = {**existing, **user_input}
             self.hass.config_entries.async_update_entry(
-                self.config_entry, data=new_data
+                self.config_entry, data=merged
             )
             return self.async_create_entry(title="", data={})
 
-        current = self.config_entry.data
-
-        # Build dashboard options dynamically
-        dashboard_options = await self._get_dashboard_options()
-
-        schema_dict: dict[Any, Any] = {
-            vol.Optional(
-                CONF_SHARE_DASHBOARDS,
-                default=current.get(CONF_SHARE_DASHBOARDS, False),
-            ): BooleanSelector(),
-            vol.Optional(
-                CONF_INSTANCE_URL,
-                default=current.get(CONF_INSTANCE_URL, ""),
-            ): TextSelector(TextSelectorConfig(type="url")),
-        }
-
-        if dashboard_options:
-            schema_dict[vol.Optional(
-                CONF_SHARED_DASHBOARD_LIST,
-                default=current.get(CONF_SHARED_DASHBOARD_LIST, []),
-            )] = SelectSelector(
-                SelectSelectorConfig(
-                    options=dashboard_options,
-                    multiple=True,
-                    mode=SelectSelectorMode.LIST,
-                )
-            )
-
         return self.async_show_form(
-            step_id="dashboards",
-            data_schema=vol.Schema(schema_dict),
+            step_id="init",
+            data_schema=_selection_schema(self.hass, dict(self.config_entry.data)),
         )
-
-    async def _get_dashboard_options(self) -> list[SelectOptionDict]:
-        """Get available dashboards as selector options."""
-        options: list[SelectOptionDict] = []
-        try:
-            from homeassistant.components.lovelace.const import LOVELACE_DATA
-
-            lovelace_data = self.hass.data.get(LOVELACE_DATA)
-            if lovelace_data is None:
-                return options
-
-            for url_path, dashboard in lovelace_data.dashboards.items():
-                if url_path is None:
-                    options.append(
-                        SelectOptionDict(value="lovelace", label="Overview (default)")
-                    )
-                else:
-                    title = url_path
-                    if hasattr(dashboard, "config") and isinstance(
-                        dashboard.config, dict
-                    ):
-                        title = dashboard.config.get("title", url_path)
-                    options.append(
-                        SelectOptionDict(value=url_path, label=title)
-                    )
-        except Exception:
-            pass
-        return options

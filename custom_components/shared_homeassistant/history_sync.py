@@ -11,11 +11,15 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .const import (
-    TOPIC_PREFIX,
+    CONF_INSTANCE_ID,
+    DEFAULT_DISCOVERY_PREFIX,
+    HISTORY_CHUNK_SIZE,
     TOPIC_HISTORY_CHUNK,
     TOPIC_HISTORY_DONE,
-    CONF_INSTANCE_ID,
-    HISTORY_CHUNK_SIZE,
+    TOPIC_HISTORY_REQUEST,
+    TOPIC_HISTORY_REQUEST_WILDCARD,
+    TOPIC_HISTORY_RESPONSE_WILDCARD,
+    TOPIC_PREFIX,
 )
 from .mqtt_client import MQTTClient
 
@@ -41,8 +45,8 @@ class HistoryProvider:
         self._instance_id = instance_id
 
     async def async_register_subscriptions(self) -> None:
-        """Pre-register MQTT subscriptions (before connect)."""
-        topic = f"{TOPIC_PREFIX}/{self._instance_id}/history_request/#"
+        """Pre-register MQTT subscriptions (on own broker)."""
+        topic = TOPIC_HISTORY_REQUEST_WILDCARD.format(instance_id=self._instance_id)
         await self._mqtt.async_subscribe(topic, self._handle_history_request)
 
     async def async_start(self) -> None:
@@ -51,7 +55,7 @@ class HistoryProvider:
 
     async def async_stop(self) -> None:
         """Stop listening."""
-        topic = f"{TOPIC_PREFIX}/{self._instance_id}/history_request/#"
+        topic = TOPIC_HISTORY_REQUEST_WILDCARD.format(instance_id=self._instance_id)
         await self._mqtt.async_unsubscribe(topic)
 
     async def _handle_history_request(self, topic: str, payload: bytes) -> None:
@@ -257,8 +261,8 @@ class HistoryConsumer:
         self._metadata_buffer: dict[tuple[str, str], dict] = {}
 
     async def async_register_subscriptions(self) -> None:
-        """Pre-register MQTT subscriptions (before connect)."""
-        topic = f"{TOPIC_PREFIX}/+/history_response/{self._instance_id}/#"
+        """Pre-register MQTT subscriptions (on peer broker)."""
+        topic = TOPIC_HISTORY_RESPONSE_WILDCARD.format(instance_id=self._instance_id)
         await self._mqtt.async_subscribe(topic, self._handle_history_response)
 
     async def async_start(self) -> None:
@@ -268,13 +272,17 @@ class HistoryConsumer:
 
     async def async_stop(self) -> None:
         """Stop listening."""
-        topic = f"{TOPIC_PREFIX}/+/history_response/{self._instance_id}/#"
+        topic = TOPIC_HISTORY_RESPONSE_WILDCARD.format(instance_id=self._instance_id)
         await self._mqtt.async_unsubscribe(topic)
 
     async def async_request_history(
         self, source_instance_id: str, entity_id: str
     ) -> None:
-        """Request history for an entity from its source instance."""
+        """Request history for an entity from its source instance.
+
+        Publishes on the peer broker (where the source's HistoryProvider
+        subscribes via its own_mqtt connection).
+        """
         since = self._last_imported.get(entity_id)
 
         payload = {
@@ -283,7 +291,9 @@ class HistoryConsumer:
             "since": since,
         }
 
-        topic = f"{TOPIC_PREFIX}/{source_instance_id}/history_request/{entity_id}"
+        topic = TOPIC_HISTORY_REQUEST.format(
+            instance_id=source_instance_id, entity_id=entity_id
+        )
         await self._mqtt.async_publish(topic, json.dumps(payload), retain=False)
         _LOGGER.info(
             "Requested history for %s from %s (since=%s)",
