@@ -222,13 +222,17 @@ class Publisher:
         ent_reg = er.async_get(self._hass)
         dev_reg = dr.async_get(self._hass)
 
+        # Each selection field is an independent inclusion source. An item
+        # placed only in the "readonly" list is STILL shared — just as
+        # read-only. The union is what we publish; readonly wins when
+        # an item appears in both lists.
         shared_integrations = set(self._config.get(CONF_SHARED_INTEGRATIONS, []))
-        shared_devices = set(self._config.get(CONF_SHARED_DEVICES, []))
-        shared_entities = set(self._config.get(CONF_SHARED_ENTITIES, []))
         readonly_integrations = set(
             self._config.get(CONF_READONLY_INTEGRATIONS, [])
         )
+        shared_devices = set(self._config.get(CONF_SHARED_DEVICES, []))
         readonly_devices = set(self._config.get(CONF_READONLY_DEVICES, []))
+        shared_entities = set(self._config.get(CONF_SHARED_ENTITIES, []))
         readonly_entities = set(self._config.get(CONF_READONLY_ENTITIES, []))
 
         result: dict[str, dict[str, Any]] = {}
@@ -239,7 +243,8 @@ class Publisher:
                 return
             if entry.domain not in SUPPORTED_DOMAINS:
                 return
-            # First include wins; keep strictest (readonly) if already readonly
+            # Preserve strictest (readonly) if the entity is referenced
+            # through multiple selection paths.
             if entity_id in result:
                 result[entity_id]["readonly"] = (
                     result[entity_id]["readonly"] or readonly
@@ -247,23 +252,21 @@ class Publisher:
             else:
                 result[entity_id] = {"readonly": readonly}
 
-        # Integration-level sharing → walk every device in each entry
-        for entry_id in shared_integrations:
+        # Integration-level sharing (union of rw + ro integrations)
+        for entry_id in shared_integrations | readonly_integrations:
             ro_integration = entry_id in readonly_integrations
             for device in dr.async_entries_for_config_entry(dev_reg, entry_id):
-                if device.id in shared_devices:
-                    continue  # handled by device loop with possibly different flag
                 for entry in er.async_entries_for_device(ent_reg, device.id):
                     _include(entry.entity_id, ro_integration)
 
-        # Device-level sharing
-        for device_id in shared_devices:
+        # Device-level sharing (union of rw + ro devices)
+        for device_id in shared_devices | readonly_devices:
             ro_device = device_id in readonly_devices
             for entry in er.async_entries_for_device(ent_reg, device_id):
                 _include(entry.entity_id, ro_device)
 
-        # Entity-level sharing
-        for entity_id in shared_entities:
+        # Entity-level sharing (union of rw + ro entities)
+        for entity_id in shared_entities | readonly_entities:
             ro_entity = entity_id in readonly_entities
             _include(entity_id, ro_entity)
 
@@ -492,7 +495,12 @@ class Publisher:
     async def _publish_state(
         self, entity_id: str, state: State, domain: str
     ) -> None:
-        """Publish state + attrs to MQTT."""
+        """Publish state + attrs to MQTT.
+
+        Skips re-publishing if the serialized payloads haven't changed since
+        the last publish. This prevents flooding the broker on frequent
+        state_changed events that only touch last_updated / last_changed.
+        """
         state_topic = TOPIC_ENTITY_STATE.format(
             instance_id=self._instance_id, entity_id=entity_id
         )
@@ -502,20 +510,34 @@ class Publisher:
 
         # Domain-specific payload formatting for special schemas
         if domain == "light":
-            payload = self._format_light_state(state)
+            state_payload = self._format_light_state(state)
         else:
-            payload = str(state.state)
-
-        await self._mqtt.async_publish(state_topic, payload, retain=True)
+            state_payload = str(state.state)
 
         attrs = {
             k: _jsonable(v)
             for k, v in state.attributes.items()
             if k not in SKIP_ATTRIBUTES
         }
-        await self._mqtt.async_publish(
-            attr_topic, json.dumps(attrs), retain=True
-        )
+        attr_payload = json.dumps(attrs, sort_keys=True)
+
+        info = self._published_entities.get(entity_id)
+        last_state = info.get("last_state") if info else None
+        last_attrs = info.get("last_attrs") if info else None
+
+        if state_payload != last_state:
+            await self._mqtt.async_publish(
+                state_topic, state_payload, retain=True
+            )
+            if info is not None:
+                info["last_state"] = state_payload
+
+        if attr_payload != last_attrs:
+            await self._mqtt.async_publish(
+                attr_topic, attr_payload, retain=True
+            )
+            if info is not None:
+                info["last_attrs"] = attr_payload
 
     @staticmethod
     def _format_light_state(state: State) -> str:

@@ -195,9 +195,15 @@ class MQTTClient:
             self._client = None
 
     async def async_publish(
-        self, topic: str, payload: str, retain: bool = False, qos: int = 1
+        self, topic: str, payload: str, retain: bool = False, qos: int = 0
     ) -> None:
-        """Publish a message."""
+        """Publish a message.
+
+        Default QoS is 0. Retained messages are stored by the broker
+        regardless of QoS, and QoS 1 creates broker-ACK backpressure that
+        can flood the client's pending-publish queue under high state-change
+        rates. Caller can opt into QoS 1 for specific critical deliveries.
+        """
         if not self._connected.is_set():
             _LOGGER.warning("Cannot publish to %s: not connected", topic)
             return
